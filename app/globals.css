@@ -1,26 +1,176 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/*
+  Tailwind v4 CSS-first config. The component classes below are only the
+  small set that is reused across many files or is impractical as inline
+  utilities (element defaults, markdown styling); everything else lives in
+  the components as inline utilities.
+*/
+
+@theme {
+  --color-brand: #2448b8;
+  --color-brand-dark: #1d3a99;
+  --color-brand-soft: #e8edff;
+  --color-brand-tint: #eef2fb;
+  --color-ink: #20242a;
+  --color-ink-soft: #30343a;
+  --color-muted: #616975;
+  --color-muted-2: #707782;
+  --color-faint: #858c96;
+  --color-faint-2: #8a9099;
+  --color-line: #e1e4e8;
+  --color-line-soft: #e4e7eb;
+  --color-line-light: #dfe3e8;
+  --color-surface: #f7f8fa;
+  --color-page: #f5f6f8;
+
+  --font-sans: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  html,
+  body {
+    margin: 0;
+    width: 100%;
+    min-height: 100%;
+  }
+
+  body {
+    @apply min-w-[320px] bg-page font-sans text-ink;
+  }
+
+  h1 {
+    @apply mb-3 text-[36px] leading-[1.15] font-bold;
+  }
+
+  label {
+    @apply mt-7 mb-2.5 block font-semibold;
+  }
+
+  textarea,
+  select,
+  input {
+    font: inherit;
+  }
+
+  textarea {
+    @apply w-full resize-y rounded-[10px] border border-[#cbd0d6] bg-white px-4 py-3.5 leading-relaxed;
+  }
+
+  select {
+    @apply mt-2 w-full rounded-lg border border-[#cbd0d6] bg-white px-3 py-2.5 text-ink;
+  }
+
+  textarea:focus,
+  select:focus {
+    @apply border-transparent outline-2 outline-[#4d72df];
+  }
+
+  button {
+    @apply cursor-pointer rounded-[10px] bg-brand px-5 py-3 font-semibold text-white transition-colors;
+  }
+
+  button:hover:not(:disabled) {
+    @apply bg-brand-dark;
+  }
+
+  button:active:not(:disabled) {
+    @apply translate-y-px;
+  }
+
+  button:focus-visible {
+    @apply outline-2 outline-offset-2 outline-[#4d72df];
+  }
+
+  button:disabled {
+    @apply cursor-not-allowed bg-[#b9bec7];
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer components {
+  /* Reused composites — everything else lives inline as utilities. */
+  .text-input {
+    @apply w-full rounded-lg border border-[#cbd0d6] bg-white px-3 py-2.5;
+  }
+
+  .text-input:focus {
+    @apply border-transparent outline-2 outline-offset-1 outline-[#4d72df];
+  }
+
+  .btn-secondary {
+    @apply bg-[#e7e9ed] text-ink-soft hover:bg-[#d8dce2];
+  }
+
+  .btn-ghost {
+    @apply bg-transparent px-2.5 py-1.5 text-[13px] text-muted hover:bg-[#f1f2f4];
+  }
+
+  .btn-utility {
+    @apply bg-transparent px-2 py-1 text-[11px] text-[#a7adba] hover:bg-[#f1f2f4] hover:text-ink-soft;
+  }
+
+  /* Markdown-rendered repair instructions (ReactMarkdown output). */
+  .markdown-body {
+    overflow-wrap: anywhere;
+  }
+
+  .markdown-body h1,
+  .markdown-body h2,
+  .markdown-body h3 {
+    margin-top: 24px;
+    margin-bottom: 10px;
+    line-height: 1.3;
+  }
+
+  .markdown-body > :first-child {
+    margin-top: 0;
+  }
+
+  .markdown-body p {
+    margin: 0 0 14px;
+  }
+
+  .markdown-body ul,
+  .markdown-body ol {
+    margin: 0 0 16px;
+    padding-left: 24px;
+  }
+
+  .markdown-body li + li {
+    margin-top: 6px;
+  }
+
+  .markdown-body code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.92em;
+  }
+
+  .markdown-body pre {
+    overflow-x: auto;
+    padding: 14px;
+    border-radius: 8px;
+    background: #f1f3f5;
+  }
+
+  /* Shared loading spinner (Forge viewport + design picker). */
+  .cad-spinner {
+    width: 40px;
+    height: 40px;
+    margin: 0 auto 18px;
+    border: 3px solid #d5d9e0;
+    border-top-color: #2448b8;
+    border-radius: 50%;
+    animation: cad-spin 0.9s linear infinite;
+  }
+
+  @keyframes cad-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
 }

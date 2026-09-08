@@ -9,4 +9,4 @@ jobs:
         uses: rhaversen/.github/.github/workflows/development-frontend.yml@main
         with:
             node_version: "lts/*"
-            run_tests: false
+            run_tests: true

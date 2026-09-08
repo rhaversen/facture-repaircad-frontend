@@ -17,7 +17,7 @@ const LABEL_BASE = "mt-2 w-full px-1 text-[11px] leading-[1.25] break-words text
 
 export default function RepairProgress({ currentStep }: { currentStep: number }) {
   return (
-    <div className="my-7 mb-7 w-full min-w-0 shrink-0 max-[1050px]:my-3.5 max-[1050px]:mb-6">
+    <div className="my-7 w-full min-w-0 shrink-0 max-[1050px]:my-3.5 max-[1050px]:mb-6">
       {/* Full stepper on wide screens */}
       <div className="flex w-full min-w-0 items-start max-[1050px]:hidden">
         {STEPS.map((step, index) => {

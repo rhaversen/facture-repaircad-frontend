@@ -25,7 +25,6 @@ import CalibrationPanel, {
 } from "./CalibrationPanel";
 
 interface CadModelViewProps {
-  accessToken: string;
   handoffMarkdown: string;
   runId: string | null;
   onBack: () => void;
@@ -43,7 +42,6 @@ interface CadModelViewProps {
   orientation throughout.
 */
 export default function CadModelView({
-  accessToken,
   handoffMarkdown,
   runId,
   onBack,
@@ -82,7 +80,6 @@ export default function CadModelView({
     phase,
     rehydrate,
     reset,
-    accessToken,
     runId,
     handoffMarkdown,
   });
@@ -106,26 +103,25 @@ export default function CadModelView({
   } = useRefinementRun();
 
   useEffect(() => {
-    if (!accessToken || !handoffMarkdown?.trim()) return;
+    if (!handoffMarkdown?.trim()) return;
     const effectiveDesignId = designId ?? variants[0]?.designId ?? null;
     if (!effectiveDesignId) return;
     initializeRefinement({
-      accessToken,
       handoffMarkdown,
       designId: effectiveDesignId,
     }).catch((err) => {
       console.error("Could not start refinement conversation:", err);
     });
-  }, [accessToken, handoffMarkdown, designId, variants, initializeRefinement]);
+  }, [handoffMarkdown, designId, variants, initializeRefinement]);
 
   // Keep the refinement run synchronized so forge_instruction / final_guidance
   // produced by R3 becomes visible to this component.
   useEffect(() => {
-    if (!refinementRunId || !accessToken) return;
-    reconcileRefinement(accessToken);
-    const interval = setInterval(() => reconcileRefinement(accessToken), 2000);
+    if (!refinementRunId) return;
+    reconcileRefinement();
+    const interval = setInterval(() => reconcileRefinement(), 2000);
     return () => clearInterval(interval);
-  }, [refinementRunId, accessToken, reconcileRefinement]);
+  }, [refinementRunId, reconcileRefinement]);
 
   const lastProcessedForgeInstructionRef = useRef<string | null>(null);
 
@@ -168,7 +164,6 @@ export default function CadModelView({
       lastSelectedDesignIdRef.current = null;
       setPickerSelectedId(null);
       duplicateAndRefine({
-        accessToken,
         feedback: instruction,
         sourceDesignId,
         runId,
@@ -178,7 +173,7 @@ export default function CadModelView({
       return;
     }
 
-    refineExistingDesign({ accessToken, instruction, runId }).then((success) => {
+    refineExistingDesign({ instruction, runId }).then((success) => {
       if (!success) {
         // Allow the same instruction to be retried if Forge failed.
         lastProcessedForgeInstructionRef.current = null;
@@ -190,7 +185,6 @@ export default function CadModelView({
     variants,
     iteratingFeedback,
     busy,
-    accessToken,
     runId,
     pickerSelectedId,
     duplicateAndRefine,
@@ -231,7 +225,7 @@ export default function CadModelView({
     );
     if (!ok) return;
     reset();
-    generate({ accessToken, handoffMarkdown, runId });
+    generate({ handoffMarkdown, runId });
   }
 
   const finalGuidance = refinementRunningDoc?.final_guidance?.trim() ?? "";
@@ -270,7 +264,7 @@ export default function CadModelView({
     [variants],
   );
 
-  const showFinalGuidanceSection = phase !== "error" && phase === "ready";
+  const showFinalGuidanceSection = phase === "ready";
 
   return (
     <AppShell fill>
@@ -299,8 +293,8 @@ export default function CadModelView({
         </div>
 
         {entryChecking ? (
-          <div className="relative flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
-            <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center text-ink-soft">
+          <div className="flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
+            <div className="flex flex-col items-center justify-center p-6 text-center text-ink-soft">
               <div className="cad-spinner" />
               <p>Checking for an existing design…</p>
             </div>
@@ -315,7 +309,7 @@ export default function CadModelView({
               <button
                 type="button"
                 className="mt-4.5 bg-brand px-5 py-3 font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] hover:bg-brand-dark"
-                onClick={() => generate({ accessToken, handoffMarkdown, runId })}
+                onClick={() => generate({ handoffMarkdown, runId })}
               >
                 Generate model
               </button>
@@ -331,7 +325,7 @@ export default function CadModelView({
                 className="btn-secondary mt-4.5"
                 onClick={() => {
                   reset();
-                  generate({ accessToken, handoffMarkdown, runId });
+                  generate({ handoffMarkdown, runId });
                 }}
               >
                 Try again
@@ -363,7 +357,6 @@ export default function CadModelView({
               </section>
 
               <RefinementChat
-                accessToken={accessToken}
                 refinementRunId={refinementRunId}
                 refinementInitializing={refinementInitializing}
                 refinementError={refinementError}
@@ -373,35 +366,33 @@ export default function CadModelView({
               />
             </div>
 
-            <div className="mt-auto w-full shrink-0 rounded-xl border border-line-soft bg-surface p-5">
-              <div className="flex flex-col items-start gap-2.5">
-                {(() => {
-                  const chosenVariant = variants.find(
-                    (v) => v.designId === pickerSelectedId,
-                  );
-                  const chosenUnfinished =
-                    chosenVariant !== undefined &&
-                    (chosenVariant.mesh === null || chosenVariant.status !== "ready");
-                  return (
-                    <button
-                      type="button"
-                      className="w-full bg-brand px-5 py-3 text-[15px] font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] hover:bg-brand-dark disabled:cursor-not-allowed disabled:bg-[#b9bec7]"
-                      disabled={pickerSelectedId === null || chosenUnfinished}
-                      onClick={() => chooseDesign(pickerSelectedId)}
-                    >
-                      {pickerSelectedId === null
-                        ? "Select a design above to continue"
-                        : chosenUnfinished
-                          ? "Design is still generating…"
-                          : `I'm happy with Design ${variants.findIndex((v) => v.designId === pickerSelectedId) + 1}`}
-                    </button>
-                  );
-                })()}
-                <p className="mt-0 text-[13px] text-[#8a93a1]">
-                  Continues to calibration on the design you pick; the other
-                  candidates are discarded.
-                </p>
-              </div>
+            <div className="mt-auto flex w-full shrink-0 flex-col items-start gap-2.5 rounded-xl border border-line-soft bg-surface p-5">
+              {(() => {
+                const chosenVariant = variants.find(
+                  (v) => v.designId === pickerSelectedId,
+                );
+                const chosenUnfinished =
+                  chosenVariant !== undefined &&
+                  (chosenVariant.mesh === null || chosenVariant.status !== "ready");
+                return (
+                  <button
+                    type="button"
+                    className="w-full bg-brand px-5 py-3 text-[15px] font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] hover:bg-brand-dark disabled:cursor-not-allowed disabled:bg-[#b9bec7]"
+                    disabled={pickerSelectedId === null || chosenUnfinished}
+                    onClick={() => chooseDesign(pickerSelectedId)}
+                  >
+                    {pickerSelectedId === null
+                      ? "Select a design above to continue"
+                      : chosenUnfinished
+                        ? "Design is still generating…"
+                        : `I'm happy with Design ${variants.findIndex((v) => v.designId === pickerSelectedId) + 1}`}
+                  </button>
+                );
+              })()}
+              <p className="mt-0 text-[13px] text-[#8a93a1]">
+                Continues to calibration on the design you pick; the other
+                candidates are discarded.
+              </p>
             </div>
           </div>
         ) : awaitingInput ? (
@@ -499,7 +490,6 @@ export default function CadModelView({
             </section>
 
             <RefinementChat
-              accessToken={accessToken}
               refinementRunId={refinementRunId}
               refinementInitializing={refinementInitializing}
               refinementError={refinementError}
@@ -558,7 +548,6 @@ export default function CadModelView({
 }
 
 function RefinementChat({
-  accessToken,
   refinementRunId,
   refinementInitializing,
   refinementError,
@@ -566,7 +555,6 @@ function RefinementChat({
   disabled = false,
   disabledMessage,
 }: {
-  accessToken: string;
   refinementRunId: string | null;
   refinementInitializing: boolean;
   refinementError: string;
@@ -602,7 +590,6 @@ function RefinementChat({
         <div className="min-h-0 flex-1">
           <FlowChatFrame
             runId={refinementRunId}
-            accessToken={accessToken}
             title="RepairCAD CAD refinement"
             disabled={disabled}
             disabledMessage={disabledMessage}

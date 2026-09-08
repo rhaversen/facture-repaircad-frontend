@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import RunList from "@/features/runs/RunList";
 import DescribeRepair from "@/features/intake/DescribeRepair";
@@ -8,19 +8,17 @@ import PhotoAnnotation from "@/features/intake/PhotoAnnotation";
 import ReviewIntake from "@/features/intake/ReviewIntake";
 import CadModelView from "@/features/forge/CadModelView";
 import CaseClarification from "@/features/chat/CaseClarification";
-import FlowChatEmbed, {
-  AccessTokenGate,
-} from "@/features/chat/FlowChatEmbed";
+import FlowChatEmbed from "@/features/chat/FlowChatEmbed";
 import RepairProgress from "@/components/RepairProgress";
 import { useRepairRun } from "@/hooks/useRepairRun";
 import { useIntake } from "@/hooks/useIntake";
-import {
-  readAccessToken,
-  saveAccessToken,
-  clearAccessToken,
-  subscribeToTokenStorage,
-} from "@/lib/tokenStorage";
+import { authUrl, getMe, logout } from "@/lib/auth";
 import { buildIntakeMessage, buildClarificationAnnotations } from "@/lib/intakeMessageUtils";
+import {
+  deriveScreen,
+  handoffReadyFor,
+  screenForSelectedRun,
+} from "@/lib/runProgress";
 import { s2NodeId } from "@/lib/pipeline";
 
 /*
@@ -36,17 +34,24 @@ const CHAT_SCREEN = 5;
 
 export default function RepairCADApp() {
   /*
-    The token lives in localStorage, so the first client render cannot know it
-    yet. Rather than flipping state in an effect, derive "loaded" from the
-    first client render via useSyncExternalStore — no cascading render.
+    Auth lives in the shared Facture session cookie, so the first client
+    render cannot know it yet. A single /auth/me check settles it once; an
+    unauthenticated visitor is sent to the central auth page.
   */
-  const accessToken = useSyncExternalStore(
-    subscribeToTokenStorage,
-    readAccessToken,
-    () => null,
-  );
+  const [authChecked, setAuthChecked] = useState(false);
+  const [loggedIn, setLoggedIn] = useState(false);
+  useEffect(() => {
+    getMe().then((user) => {
+      if (user === null) {
+        window.location.assign(authUrl());
+        return;
+      }
+      setLoggedIn(true);
+      setAuthChecked(true);
+    });
+  }, []);
 
-  const repairRun = useRepairRun({ accessToken });
+  const repairRun = useRepairRun();
   const {
     runId,
     run,
@@ -77,18 +82,15 @@ export default function RepairCADApp() {
 
   const [s2NodeIdValue, setS2NodeIdValue] = useState<string | null>(null);
   useEffect(() => {
-    if (!accessToken || s2NodeIdValue !== null) return;
+    if (!authChecked || s2NodeIdValue !== null) return;
     s2NodeId()
       .then(setS2NodeIdValue)
       .catch((err) => {
         console.error("Could not resolve pipeline node ids:", err);
       });
-  }, [accessToken, s2NodeIdValue]);
+  }, [authChecked, s2NodeIdValue]);
 
   const handoffMarkdown = runningDoc?.provisional_cad_handoff?.trim() ?? "";
-  const handoffReady = run?.status === "idle" && handoffMarkdown !== "";
-  const hasConversation = messages.some((message) => message.role === "user");
-  const conversationReady = handoffReady || (run !== null && hasConversation);
 
   const waitingForCaseClarification =
     run?.status === "idle" &&
@@ -96,16 +98,23 @@ export default function RepairCADApp() {
     run?.currentNodeId === s2NodeIdValue;
 
   const [handoffDismissed, setHandoffDismissed] = useState(false);
-  const [prevHandoffReady, setPrevHandoffReady] = useState(handoffReady);
-  if (prevHandoffReady !== handoffReady) {
-    setPrevHandoffReady(handoffReady);
-    if (!handoffReady) setHandoffDismissed(false);
-  }
+  const screen = deriveScreen({
+    run,
+    messages,
+    handoffMarkdown,
+    handoffDismissed,
+    requestedScreen,
+  });
 
-  let screen = requestedScreen;
-  if (screen >= 1 && screen <= 4 && conversationReady) screen = CHAT_SCREEN;
-  if (screen === CHAT_SCREEN && handoffReady && !handoffDismissed) {
-    screen = CAD_SCREEN;
+  // Re-arm the CAD auto-advance whenever the handoff clears (e.g. a new
+  // turn restarts the pipeline), so the next handoff advances again.
+  const [prevHandoffReady, setPrevHandoffReady] = useState(
+    handoffReadyFor(run, handoffMarkdown),
+  );
+  const currentHandoffReady = handoffReadyFor(run, handoffMarkdown);
+  if (prevHandoffReady !== currentHandoffReady) {
+    setPrevHandoffReady(currentHandoffReady);
+    if (!currentHandoffReady) setHandoffDismissed(false);
   }
 
   // ── Bootstrap + sync effects ────────────────────────────────────────────
@@ -128,11 +137,7 @@ export default function RepairCADApp() {
 
   const bootstrappedRef = useRef(false);
   useEffect(() => {
-    if (!accessToken) {
-      // Re-arm so a different token bootstraps too.
-      bootstrappedRef.current = false;
-      return;
-    }
+    if (!authChecked) return;
     if (bootstrappedRef.current) return;
     bootstrappedRef.current = true;
 
@@ -145,7 +150,7 @@ export default function RepairCADApp() {
           });
       }
     });
-  }, [accessToken]);
+  }, [authChecked]);
 
   useEffect(() => {
     if (screen === CHAT_SCREEN) reconcileRunRef.current();
@@ -157,14 +162,14 @@ export default function RepairCADApp() {
   useEffect(() => {
     if (
       screen !== CHAT_SCREEN ||
-      handoffReady ||
+      currentHandoffReady ||
       waitingForCaseClarification
     ) {
       return;
     }
     const interval = setInterval(() => reconcileRunRef.current(), 5000);
     return () => clearInterval(interval);
-  }, [screen, handoffReady, waitingForCaseClarification]);
+  }, [screen, currentHandoffReady, waitingForCaseClarification]);
 
   // The embed reports every status transition; a settled turn is any
   // non-running status (idle or failed) — reconcile on both.
@@ -198,13 +203,18 @@ export default function RepairCADApp() {
 
   async function handleSelectRun(selectedRunId: string) {
     try {
-      const { messages: loadedMessages } = await selectRun(selectedRunId);
+      const {
+        messages: loadedMessages,
+        run: loadedRun,
+      } = await selectRun(selectedRunId);
       // Clear any earlier dismissal so a completed run still auto-advances.
       setHandoffDismissed(false);
-      // Fresh runs are seeded with one assistant greeting, so "no
-      // conversation" means no user turn yet: open the intake wizard.
-      const hasUserTurn = loadedMessages.some((message) => message.role === "user");
-      setScreen(hasUserTurn ? CHAT_SCREEN : 1);
+      // Fresh runs are seeded with one assistant greeting, so "no user turn
+      // in the transcript" usually means the intake wizard. But a transcript
+      // alone cannot decide this: a messages fetch that comes back empty or
+      // partial (legacy docs, hiccup) must not dump a progressed run back
+      // into intake — runningDoc/status carry the progress signal too.
+      setScreen(screenForSelectedRun(loadedRun, loadedMessages));
     } catch {
       // Error handled in hook; stay on the list.
     }
@@ -214,13 +224,9 @@ export default function RepairCADApp() {
     setScreen(RUN_LIST);
   }
 
-  function handleLogout() {
-    clearAccessToken();
-    setScreen(RUN_LIST);
-  }
-
-  function handleChangeToken() {
-    clearAccessToken();
+  async function handleLogout() {
+    await logout();
+    window.location.assign(authUrl());
   }
 
   const [clarificationSubmitting, setClarificationSubmitting] = useState(false);
@@ -282,8 +288,8 @@ export default function RepairCADApp() {
 
   // ── Render ──────────────────────────────────────────────────────────────
 
-  if (!accessToken) {
-    return <AccessTokenGate onSaved={saveAccessToken} onLogout={handleLogout} />;
+  if (!authChecked || !loggedIn) {
+    return null;
   }
 
   const activeRunId = runId ?? run?._id ?? null;
@@ -368,16 +374,14 @@ export default function RepairCADApp() {
               : "flex min-h-0 flex-1 flex-col px-6 pb-4"
           }`}
         >
-          <div className="min-h-0 min-w-0 flex-1 max-[1050px]:h-[75dvh] max-[1050px]:flex-none">
+          <div className="min-h-0 min-w-0 flex-1 px-5 py-6 max-[1050px]:h-[75dvh] max-[1050px]:flex-none">
             <FlowChatEmbed
               runId={activeRunId}
-              accessToken={accessToken}
-              onChangeToken={handleChangeToken}
               onLogout={handleLogout}
               onNewRun={handleCreateRun}
               onViewRuns={handleViewRuns}
               onOpenCad={() => setScreen(CAD_SCREEN)}
-              cadReady={handoffReady}
+              cadReady={currentHandoffReady}
             />
           </div>
 
@@ -400,7 +404,6 @@ export default function RepairCADApp() {
   if (screen === CAD_SCREEN) {
     return (
       <CadModelView
-        accessToken={accessToken}
         handoffMarkdown={handoffMarkdown}
         runId={activeRunId}
         onBack={() => {

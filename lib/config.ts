@@ -2,9 +2,16 @@ export const BUILD_LABEL = "v2.0 -- Next.js port";
 
 const isDev = process.env.NODE_ENV === "development";
 
-export const REPAIRCAD_MODEL = isDev ? "natai/glm" : "google/gemini-3.8-flash";
+// Dev points at the CAVI gateway; the model must be vision-capable (the
+// intake uploads photos as multimodal file parts) AND tool-capable (the
+// pipeline agent is tool-driven). natai/glm is text-only; most other natai
+// models describe images wrongly — probed: natai/glm-flash reads a red test
+// image correctly and emits native tool_calls. Production uses OpenRouter.
+export const REPAIRCAD_MODEL = isDev ? "natai/glm-flash" : "google/gemini-3.8-flash";
 
-export const FORGE_MODEL = isDev ? "natai/glm" : "moonshotai/kimi-k3";
+// Dev points at the CAVI gateway; production uses OpenRouter's kimi-k3 via
+// the deployed Forge service.
+export const FORGE_MODEL = isDev ? "natai/glm-flash" : "moonshotai/kimi-k3";
 
 // Reasoning effort pinned on Forge chat requests. kimi-k3 advertises
 // max/high/low — medium would be silently dropped by Forge's effort validator.

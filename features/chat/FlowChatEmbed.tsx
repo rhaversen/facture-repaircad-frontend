@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 import { AUTH_BASE, FLOW_EMBED_BASE } from "@/lib/env";
-import { REPAIRCAD_MODEL } from "@/lib/config";
+import { FLOW_MODEL } from "@/lib/config";
 import { saveAccessToken } from "@/lib/tokenStorage";
 
 /*
@@ -31,7 +31,7 @@ export function FlowChatFrame({
 
   const params = new URLSearchParams({
     run: runId,
-    model: REPAIRCAD_MODEL,
+    model: FLOW_MODEL,
     token: accessToken,
     showTitle: "0",
     showIntro: "0",
@@ -69,7 +69,7 @@ export default function FlowChatEmbed({
 }) {
   const params = new URLSearchParams({
     run: runId ?? "",
-    model: REPAIRCAD_MODEL,
+    model: FLOW_MODEL,
     token: accessToken,
     showTitle: "0",
     showIntro: "0",

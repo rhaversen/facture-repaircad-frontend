@@ -349,20 +349,26 @@ export default function RepairCADApp() {
   }
 
   if (screen === CHAT_SCREEN) {
+    /*
+      One page, one conversation: the layout is locked to the viewport height
+      (no page scrollbar). The iframe scrolls its own transcript, and the
+      clarification sidebar scrolls its own form — exactly two scrollers, side
+      by side, both clearly bounded by the header above them.
+    */
     return (
-      <div className="min-h-screen">
-        <div className="mx-auto max-w-[1500px] px-12 pt-6 max-[640px]:px-5">
+      <div className="flex h-dvh flex-col overflow-hidden">
+        <div className="shrink-0 px-12 pt-4 max-[640px]:px-5">
           <RepairProgress currentStep={4} />
         </div>
 
         <div
           className={`${
             waitingForCaseClarification
-              ? "grid grid-cols-[minmax(0,1.4fr)_minmax(420px,1fr)] items-start gap-5 p-6 max-[1050px]:grid-cols-1"
-              : ""
-          } min-h-screen`}
+              ? "grid min-h-0 flex-1 grid-cols-[minmax(0,1.4fr)_minmax(420px,1fr)] items-stretch gap-5 px-6 pb-4 max-[1050px]:grid-cols-1 max-[1050px]:overflow-y-auto"
+              : "flex min-h-0 flex-1 flex-col px-6 pb-4"
+          }`}
         >
-          <div className="min-w-0">
+          <div className="min-h-0 min-w-0 flex-1 max-[1050px]:h-[75dvh] max-[1050px]:flex-none">
             <FlowChatEmbed
               runId={activeRunId}
               accessToken={accessToken}
@@ -370,13 +376,16 @@ export default function RepairCADApp() {
               onLogout={handleLogout}
               onNewRun={handleCreateRun}
               onViewRuns={handleViewRuns}
+              onOpenCad={() => setScreen(CAD_SCREEN)}
+              cadReady={handoffReady}
             />
           </div>
 
           {waitingForCaseClarification && (
-            <div className="sticky top-6 max-h-[calc(100vh_-_48px)] min-w-0 overflow-y-auto">
+            <div className="min-h-0 overflow-y-auto overscroll-contain rounded-2xl border border-line bg-white">
               <CaseClarification
                 question=""
+                embedded
                 onSubmit={handleClarificationSubmit}
                 submitting={clarificationSubmitting}
                 error={clarificationError}

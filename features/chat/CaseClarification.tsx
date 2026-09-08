@@ -10,6 +10,7 @@ import type { Annotation, AnnotatedCopy, Photo } from "@/lib/types";
 
 interface CaseClarificationProps {
   question?: string;
+  embedded?: boolean;
   onSubmit: (clarification: {
     content: string;
     photos: Photo[];
@@ -27,6 +28,7 @@ interface CaseClarificationProps {
 */
 export default function CaseClarification({
   question = "",
+  embedded = false,
   onSubmit,
   submitting,
   error,
@@ -158,11 +160,11 @@ export default function CaseClarification({
   }
 
   return (
-    <AppShell>
-      <Card className="!max-w-none !p-7">
-        <AppHeader />
+    <AppShell embedded={embedded}>
+      <Card className={`!max-w-none !p-7 ${embedded ? "!pt-7" : ""}`}>
+        {!embedded && <AppHeader />}
 
-        <h1>Repair clarification</h1>
+        <h1 className={embedded ? "mt-0 text-xl" : ""}>Repair clarification</h1>
 
         {question && <div className="mb-6 rounded-lg bg-surface p-4 text-ink-soft">{question}</div>}
 
@@ -236,6 +238,7 @@ export default function CaseClarification({
                   <AnnotationCanvas
                     imageUrl={activePhoto.previewUrl}
                     imageAlt=""
+                    compact={embedded}
                     annotations={activeAnnotations.map((annotation) => ({
                       ...annotation,
                       label: annotation.label,

@@ -273,16 +273,8 @@ export default function CadModelView({
   const showFinalGuidanceSection = phase !== "error" && phase === "ready";
 
   return (
-    <AppShell>
-      <Card className="!max-w-[1500px]">
-        <RepairProgress currentStep={finalGuidance ? 6 : 5} />
-
-        <div className="mb-6">
-          <button type="button" className="btn-secondary" onClick={onBack}>
-            ← Back to chat
-          </button>
-        </div>
-
+    <AppShell fill>
+      <Card fill className="!max-w-[1500px]">
         <AppHeader
           utilities={
             <>
@@ -299,15 +291,22 @@ export default function CadModelView({
           }
         />
 
+        <div className="mb-6 shrink-0">
+          <button type="button" className="btn-secondary" onClick={onBack}>
+            ← Back to chat
+          </button>
+          <RepairProgress currentStep={finalGuidance ? 6 : 5} />
+        </div>
+
         {entryChecking ? (
-          <div className="relative flex h-[560px] w-full items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
+          <div className="relative flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
             <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center text-ink-soft">
               <div className="cad-spinner" />
               <p>Checking for an existing design…</p>
             </div>
           </div>
         ) : entryMissing ? (
-          <div className="relative flex h-[560px] w-full items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
+          <div className="relative flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
             <div className="max-w-[420px] p-6 text-center text-ink-soft">
               <strong>No model has been generated for this repair yet.</strong>
               <p className="mt-2.5 text-[13px] text-[#8a93a1]">
@@ -323,7 +322,7 @@ export default function CadModelView({
             </div>
           </div>
         ) : phase === "error" ? (
-          <div className="relative flex h-[560px] w-full items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
+          <div className="relative flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
             <div className="max-w-[420px] p-6 text-center text-[#ffb4b4]">
               <strong className="mb-2 block text-lg">Forge could not generate the model.</strong>
               <p>{error || "Unknown error."}</p>
@@ -340,40 +339,41 @@ export default function CadModelView({
             </div>
           </div>
         ) : phase === "choosing" ? (
-          <div className="grid grid-cols-[minmax(0,2fr)_minmax(340px,1fr)] items-start gap-6 max-[1000px]:grid-cols-1">
-            <section className="min-w-0">
-              <div className="mb-6">
-                <h1 className="text-[30px]">Choose a rough shape for the design</h1>
-                <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
-                  Several candidates were generated from your repair handoff.
-                  Pick the one to continue with. This step is only about getting
-                  the right <strong>shape</strong> — the next step will ask you
-                  for accurate measurements, so no need to judge the exact
-                  dimensions here.
-                </p>
-              </div>
-              <DesignPicker
-                key={pickerKey}
-                variants={variants}
-                onChoose={chooseDesign}
-                onSelect={(selectedDesignId) => {
-                  lastSelectedDesignIdRef.current = selectedDesignId;
-                  setPickerSelectedId(selectedDesignId);
-                }}
+          <div className="flex min-h-[calc(100dvh-230px)] flex-1 flex-col gap-5 lg:min-h-0">
+            <div className="flex min-h-[560px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
+              <section className="min-h-0 min-w-0 flex-1">
+                <div className="mb-6">
+                  <h1 className="text-[30px]">Choose a rough shape for the design</h1>
+                  <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
+                    Several candidates were generated from your repair handoff.
+                    Pick the one to continue with. This step is only about getting
+                    the right <strong>shape</strong> — the next step will ask you
+                    for accurate measurements, so no need to judge the exact
+                    dimensions here.
+                  </p>
+                </div>
+                <DesignPicker
+                  key={pickerKey}
+                  variants={variants}
+                  onSelect={(selectedDesignId) => {
+                    lastSelectedDesignIdRef.current = selectedDesignId;
+                    setPickerSelectedId(selectedDesignId);
+                  }}
+                />
+              </section>
+
+              <RefinementChat
+                accessToken={accessToken}
+                refinementRunId={refinementRunId}
+                refinementInitializing={refinementInitializing}
+                refinementError={refinementError}
+                disabled={pickerSelectedId === null}
+                disabledMessage="Select a design first…"
+                intro="Ask RepairCAD to change the model, clarify a measurement, or pick apart a candidate. Messages here steer the Forge design. This step is about the right shape only — accurate measurements come in the next step."
               />
-            </section>
+            </div>
 
-            <RefinementChat
-              accessToken={accessToken}
-              refinementRunId={refinementRunId}
-              refinementInitializing={refinementInitializing}
-              refinementError={refinementError}
-              disabled={pickerSelectedId === null}
-              disabledMessage="Select a design first…"
-              intro="Ask RepairCAD to change the model, clarify a measurement, or pick apart a candidate. Messages here steer the Forge design. This step is about the right shape only — accurate measurements come in the next step."
-            />
-
-            <div className="col-span-full mt-2 w-full rounded-xl border border-line-soft bg-surface p-5">
+            <div className="mt-auto w-full shrink-0 rounded-xl border border-line-soft bg-surface p-5">
               <div className="flex flex-col items-start gap-2.5">
                 {(() => {
                   const chosenVariant = variants.find(
@@ -385,13 +385,15 @@ export default function CadModelView({
                   return (
                     <button
                       type="button"
-                      className="w-full bg-brand px-5 py-3 text-[15px] font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] hover:bg-brand-dark"
+                      className="w-full bg-brand px-5 py-3 text-[15px] font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] hover:bg-brand-dark disabled:cursor-not-allowed disabled:bg-[#b9bec7]"
                       disabled={pickerSelectedId === null || chosenUnfinished}
                       onClick={() => chooseDesign(pickerSelectedId)}
                     >
                       {pickerSelectedId === null
-                        ? "I'm happy with a design"
-                        : `I'm happy with Design ${variants.findIndex((v) => v.designId === pickerSelectedId) + 1}`}
+                        ? "Select a design above to continue"
+                        : chosenUnfinished
+                          ? "Design is still generating…"
+                          : `I'm happy with Design ${variants.findIndex((v) => v.designId === pickerSelectedId) + 1}`}
                     </button>
                   );
                 })()}
@@ -403,8 +405,8 @@ export default function CadModelView({
             </div>
           </div>
         ) : awaitingInput ? (
-          <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(340px,1fr)] items-start gap-6 max-[1000px]:grid-cols-1">
-            <div className="relative flex h-[560px] w-full items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
+          <div className="flex min-h-[600px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
+            <div className="relative flex min-h-[420px] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white max-lg:h-[560px]">
               <CadCanvas generating={isLoading} fitKey={designId} fitMesh={mesh}>
                 {sweepingParam !== null && frameMeshes.length > 0 ? (
                   <Stage adjustCamera={false}>
@@ -447,9 +449,9 @@ export default function CadModelView({
             />
           </div>
         ) : (
-          <div className="grid grid-cols-[minmax(0,2fr)_minmax(340px,1fr)] items-start gap-6 max-[1000px]:grid-cols-1">
-            <section className="min-w-0">
-              <div className="mb-6">
+          <div className="flex min-h-[600px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
+            <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+              <div className="mb-6 shrink-0">
                 <h1 className="text-[30px]">
                   {phase === "ready" ? "Provisional CAD model" : "Generating model..."}
                 </h1>
@@ -458,7 +460,7 @@ export default function CadModelView({
                 </p>
               </div>
 
-              <div className="relative flex h-[560px] w-full items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white max-[640px]:h-[380px]">
+              <div className="relative flex min-h-[420px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white max-lg:h-[560px]">
                 <CadCanvas generating={isLoading} fitKey={designId} fitMesh={mesh}>
                   {mesh !== null ? (
                     <Stage adjustCamera={false}>
@@ -477,7 +479,7 @@ export default function CadModelView({
               </div>
 
               {phase === "ready" && (
-                <div className="mt-6 flex gap-3">
+                <div className="mt-6 flex shrink-0 gap-3">
                   {designId !== null && (
                     <button type="button" className="btn-secondary" onClick={handleDownload3mf}>
                       Download 3MF
@@ -507,7 +509,7 @@ export default function CadModelView({
         )}
 
         {showFinalGuidanceSection && (
-          <section className="mt-6 rounded-xl border border-line bg-surface p-6">
+          <section className="mt-6 shrink-0 rounded-xl border border-line bg-surface p-6">
             <div className="mb-5 flex items-start justify-between gap-5 max-[800px]:flex-col">
               <div>
                 <h2 className="mb-1.5 text-xl">Repair instructions</h2>
@@ -523,7 +525,12 @@ export default function CadModelView({
             </div>
 
             {finalGuidance ? (
-              <div className="markdown-body rounded-[10px] border border-line bg-white p-5 leading-[1.65]">
+              /*
+                Capped with an internal scroll so a long document can never
+                push the card past the viewport or clip below the regenerate
+                footer.
+              */
+              <div className="markdown-body max-h-[40vh] overflow-y-auto overscroll-contain rounded-[10px] border border-line bg-white p-5 leading-[1.65]">
                 <ReactMarkdown>{finalGuidance}</ReactMarkdown>
               </div>
             ) : (
@@ -535,7 +542,7 @@ export default function CadModelView({
         )}
 
         {phase !== "error" && phase !== "choosing" && (
-          <div className="mt-8 flex justify-center border-t border-line-soft pt-5">
+          <div className="mt-8 flex shrink-0 justify-center border-t border-line-soft pt-5">
             <button
               type="button"
               className="rounded-lg border border-[#d5d9e0] bg-transparent px-3.5 py-1.5 text-sm text-muted hover:border-[#c0392b] hover:bg-transparent hover:text-[#c0392b]"
@@ -567,9 +574,16 @@ function RefinementChat({
   disabled?: boolean;
   disabledMessage?: string;
 }) {
+  /*
+    On desktop the aside takes an even half of the phase row, stretching to
+    the row's height (the row itself has a min-height floor, so the
+    transcript always keeps a usable area); the model column flexes to the
+    other half. When the row is stacked (narrow screens) the aside keeps a
+    fixed share of the viewport so the iframe still has a definite height.
+  */
   return (
-    <aside className="flex h-[720px] min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-white max-[1000px]:h-[600px]">
-      <div className="border-b border-line-soft px-5 py-4.5">
+    <aside className="flex h-[75dvh] min-h-[420px] min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-white lg:h-auto lg:w-1/2 lg:min-h-[420px] lg:shrink-0 lg:self-stretch">
+      <div className="shrink-0 border-b border-line-soft px-5 py-4.5">
         <h2 className="mb-1.5 text-lg">Refine your repair</h2>
         <p className="m-0 text-sm leading-[1.45] text-muted-2">{intro}</p>
       </div>
@@ -585,13 +599,15 @@ function RefinementChat({
       )}
 
       {refinementRunId && (
-        <FlowChatFrame
-          runId={refinementRunId}
-          accessToken={accessToken}
-          title="RepairCAD CAD refinement"
-          disabled={disabled}
-          disabledMessage={disabledMessage}
-        />
+        <div className="min-h-0 flex-1">
+          <FlowChatFrame
+            runId={refinementRunId}
+            accessToken={accessToken}
+            title="RepairCAD CAD refinement"
+            disabled={disabled}
+            disabledMessage={disabledMessage}
+          />
+        </div>
       )}
     </aside>
   );

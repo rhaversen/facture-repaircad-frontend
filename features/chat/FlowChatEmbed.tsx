@@ -46,7 +46,7 @@ export function FlowChatFrame({
     <iframe
       title={title}
       src={`${FLOW_EMBED_BASE}?${params.toString()}`}
-      className="min-h-0 w-full flex-1 rounded-xl border border-line bg-black"
+      className="h-full min-h-[420px] w-full rounded-xl border border-line bg-black"
       allow="clipboard-write"
     />
   );
@@ -59,6 +59,8 @@ export default function FlowChatEmbed({
   onLogout,
   onNewRun,
   onViewRuns,
+  onOpenCad,
+  cadReady = false,
 }: {
   runId: string | null;
   accessToken: string;
@@ -66,6 +68,8 @@ export default function FlowChatEmbed({
   onLogout: () => void;
   onNewRun: () => void;
   onViewRuns: () => void;
+  onOpenCad: () => void;
+  cadReady?: boolean;
 }) {
   const params = new URLSearchParams({
     run: runId ?? "",
@@ -76,13 +80,31 @@ export default function FlowChatEmbed({
     hideMessages: "2",
   });
 
+  /*
+    Fills whatever container mounts it; the host decides the height (viewport
+    app layout on desktop, fixed share of the viewport on small screens) so
+    the page itself never scrolls while the conversation is up.
+  */
   return (
-    <div className="min-h-screen px-5 py-12">
-      <main className="relative mx-auto flex h-[calc(100vh_-_48px)] w-full max-w-[900px] flex-col gap-4 rounded-2xl border border-line bg-white px-6 pb-6 pt-[72px]">
-        <div className="absolute inset-x-5 top-4 z-10 flex flex-wrap items-start justify-between gap-5">
+    <div className="flex h-full min-h-0 flex-col px-5 py-6">
+      <main className="relative mx-auto flex min-h-0 w-full max-w-[900px] flex-1 flex-col gap-4 rounded-2xl border border-line bg-white px-6 pb-6 pt-5">
+        <div className="flex flex-wrap items-center justify-between gap-5">
           <div className="text-lg font-bold">RepairCAD</div>
 
           <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              className="btn-utility"
+              onClick={onOpenCad}
+              disabled={!cadReady}
+              title={
+                cadReady
+                  ? "Open the CAD & refinement workspace"
+                  : "Available once RepairCAD has produced a CAD handoff"
+              }
+            >
+              CAD workspace →
+            </button>
             <button type="button" className="btn-utility" onClick={onNewRun}>
               New run
             </button>
@@ -101,7 +123,7 @@ export default function FlowChatEmbed({
         <iframe
           title="RepairCAD conversation"
           src={`${FLOW_EMBED_BASE}?${params.toString()}`}
-          className="h-full w-full rounded-xl border border-line bg-black"
+          className="min-h-0 w-full flex-1 rounded-xl border border-line bg-black"
           allow="clipboard-write"
         />
       </main>

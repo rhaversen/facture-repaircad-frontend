@@ -39,6 +39,3 @@ spec:
                         failureThreshold: 5
                     ports:
                         -   containerPort: 3000
-                    envFrom:
-                        -   secretRef:
-                                name: frontend-secrets

@@ -30,8 +30,12 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# env files — .env.production is tracked: the CI build on the runner needs
+# the NEXT_PUBLIC_* values, which Next.js inlines into the bundle at build
+# time. Runtime k8s secrets can never change them.
+.env
+.env*.local
+.env.development
 
 # vercel
 .vercel

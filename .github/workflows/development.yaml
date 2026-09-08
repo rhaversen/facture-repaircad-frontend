@@ -1,0 +1,12 @@
+name: Development Testing CI
+
+on:
+    pull_request:
+        branches: ["development"]
+
+jobs:
+    test:
+        uses: rhaversen/.github/.github/workflows/development-frontend.yml@main
+        with:
+            node_version: "lts/*"
+            run_tests: false

@@ -42,7 +42,7 @@ export interface SubmitClarificationArgs {
   fire-and-forget contract returns the run only — the transcript is then
   polled until the run leaves "running".
 */
-export function useRepairRun({ accessToken }: { accessToken: string | null }) {
+export function useRepairRun() {
   const [runId, setRunId] = useState<string | null>(null);
   const [run, setRun] = useState<FlowRun | null>(null);
   const [messages, setMessages] = useState<FlowMessage[]>([]);
@@ -61,8 +61,8 @@ export function useRepairRun({ accessToken }: { accessToken: string | null }) {
 
   // Shared mutable view of state for async code paths that must not depend on
   // stale closures.
-  const stateRef = useRef({ accessToken, runId });
-  stateRef.current = { accessToken, runId };
+  const stateRef = useRef({ runId });
+  stateRef.current = { runId };
 
   async function applyTurnResponse(response: TurnResponse, activeRunId: string) {
     if (Array.isArray(response.messages)) {
@@ -76,14 +76,12 @@ export function useRepairRun({ accessToken }: { accessToken: string | null }) {
   }
 
   async function pollUntilIdle(activeRunId: string): Promise<boolean> {
-    const token = stateRef.current.accessToken;
-    if (!token) return false;
     for (let i = 0; i < POLL_ITERATIONS; i++) {
       await sleep(POLL_INTERVAL_MS);
       try {
         const [updated, loadedMessages] = await Promise.all([
-          fetchRun(token, activeRunId),
-          fetchMessages(token, activeRunId),
+          fetchRun(activeRunId),
+          fetchMessages(activeRunId),
         ]);
         setRun(updated);
         setRunningDoc(updated?.runningDoc ?? {});
@@ -99,12 +97,10 @@ export function useRepairRun({ accessToken }: { accessToken: string | null }) {
   }
 
   async function listRuns(): Promise<FlowRun[] | null> {
-    const token = stateRef.current.accessToken;
-    if (!token) return null;
     setRunsLoading(true);
     setRunsError("");
     try {
-      const pipelineRuns = await fetchRuns(token);
+      const pipelineRuns = await fetchRuns();
       setRuns(pipelineRuns);
       return pipelineRuns;
     } catch (error) {
@@ -117,12 +113,10 @@ export function useRepairRun({ accessToken }: { accessToken: string | null }) {
   }
 
   async function createRun(): Promise<FlowRun> {
-    const token = stateRef.current.accessToken;
-    if (!token) throw new Error("Missing access token");
     setCreatingRun(true);
     setCreateError("");
     try {
-      const created = await apiCreateRun(token);
+      const created = await apiCreateRun();
       setRunId(created._id);
       setRun(created);
       setMessages([]);
@@ -141,14 +135,12 @@ export function useRepairRun({ accessToken }: { accessToken: string | null }) {
     run: FlowRun;
     messages: FlowMessage[];
   }> {
-    const token = stateRef.current.accessToken;
-    if (!token) throw new Error("Missing access token");
     setSelectingRun(true);
     setSelectError("");
     try {
       const [selectedRun, loadedMessages] = await Promise.all([
-        fetchRun(token, runIdToSelect),
-        fetchMessages(token, runIdToSelect),
+        fetchRun(runIdToSelect),
+        fetchMessages(runIdToSelect),
       ]);
       setRunId(runIdToSelect);
       setRun(selectedRun);
@@ -169,8 +161,6 @@ export function useRepairRun({ accessToken }: { accessToken: string | null }) {
     photos,
     annotatedCopies,
   }: SubmitIntakeArgs) {
-    const token = stateRef.current.accessToken;
-    if (!token) throw new Error("Missing access token");
     setSubmitting(true);
     setSubmissionError("");
     try {
@@ -178,7 +168,7 @@ export function useRepairRun({ accessToken }: { accessToken: string | null }) {
       // create it here so intake can also start on its own.
       let activeRunId = stateRef.current.runId;
       if (!activeRunId) {
-        const created = await apiCreateRun(token);
+        const created = await apiCreateRun();
         activeRunId = created._id;
         setRunId(activeRunId);
         stateRef.current.runId = activeRunId;
@@ -188,7 +178,7 @@ export function useRepairRun({ accessToken }: { accessToken: string | null }) {
         .map((photo) => annotatedCopies[photo.id]?.file ?? photo.file)
         .filter((file): file is File => file !== undefined);
 
-      const response = await postMessage(token, activeRunId, intakeMessage, files);
+      const response = await postMessage(activeRunId, intakeMessage, files);
       return await applyTurnResponse(response, activeRunId);
     } catch (error) {
       console.error("RepairCAD intake submission failed:", error);
@@ -206,9 +196,8 @@ export function useRepairRun({ accessToken }: { accessToken: string | null }) {
     photos,
     annotatedCopies,
   }: SubmitClarificationArgs) {
-    const token = stateRef.current.accessToken;
     const activeRunId = stateRef.current.runId;
-    if (!token || !activeRunId) return null;
+    if (!activeRunId) return null;
     if (!message.trim() && photos.length === 0) return null;
 
     try {
@@ -216,7 +205,7 @@ export function useRepairRun({ accessToken }: { accessToken: string | null }) {
         .map((photo) => annotatedCopies?.[photo.id]?.file ?? photo.file)
         .filter((file): file is File => file !== undefined);
 
-      const response = await postMessage(token, activeRunId, message, files);
+      const response = await postMessage(activeRunId, message, files);
       return await applyTurnResponse(response, activeRunId);
     } catch (error) {
       console.error("RepairCAD clarification submission failed:", error);
@@ -227,12 +216,11 @@ export function useRepairRun({ accessToken }: { accessToken: string | null }) {
 
   /** Send a plain chat turn. Only used outside the embed flows. */
   async function sendMessage(content: string): Promise<TurnResponse | null> {
-    const token = stateRef.current.accessToken;
     const activeRunId = stateRef.current.runId;
-    if (!token || !activeRunId || !content.trim()) return null;
+    if (!activeRunId || !content.trim()) return null;
 
     try {
-      const response = await postMessage(token, activeRunId, content.trim());
+      const response = await postMessage(activeRunId, content.trim());
       return await applyTurnResponse(response, activeRunId);
     } catch (error) {
       const httpStatus = (error as { response?: { status?: number } })?.response
@@ -254,20 +242,18 @@ export function useRepairRun({ accessToken }: { accessToken: string | null }) {
   /** Re-fetch the run + its messages from the server. Best-effort recovery:
    *  used when a turn response was lost (timeout / 524 / 400 on completed). */
   async function reconcileRun(): Promise<void> {
-    const token = stateRef.current.accessToken;
-    if (!token) return;
     try {
       let activeRunId = stateRef.current.runId;
 
       if (!activeRunId) {
-        const pipelineRuns = await fetchRuns(token);
+        const pipelineRuns = await fetchRuns();
         if (pipelineRuns.length === 0) return;
 
         // An intake POST that failed after creating the run leaves an empty
         // run behind; don't recover onto one — fall back to the latest run
         // that produced its handoff document.
         activeRunId = pipelineRuns[0]._id;
-        const newestMessages = await fetchMessages(token, activeRunId).catch(
+        const newestMessages = await fetchMessages(activeRunId).catch(
           () => null,
         );
         const newestIsEmpty =
@@ -287,8 +273,8 @@ export function useRepairRun({ accessToken }: { accessToken: string | null }) {
       }
 
       const [updated, loadedMessages] = await Promise.all([
-        fetchRun(token, activeRunId),
-        fetchMessages(token, activeRunId),
+        fetchRun(activeRunId),
+        fetchMessages(activeRunId),
       ]);
       setRun(updated);
       setRunningDoc(updated?.runningDoc ?? {});

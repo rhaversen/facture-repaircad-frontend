@@ -102,7 +102,7 @@ export default function DescribeRepair({
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={photo.previewUrl} alt={photo.file.name} className="block h-[180px] w-full bg-[#eceff2] object-cover" />
                 <div className="p-3.5">
-                  <div className="mb-3.5 break-anywhere text-sm text-[#59616d]">{photo.file.name}</div>
+                  <div className="break-anywhere text-sm text-[#59616d]">{photo.file.name}</div>
                   <button
                     type="button"
                     className="mt-3 w-full bg-transparent px-0 py-2 text-[#a22c2c] font-medium hover:bg-transparent hover:underline"

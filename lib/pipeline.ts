@@ -47,17 +47,9 @@ function resolveFrom(pipelines: PipelineSummary[]) {
   };
 }
 
-function getStoredToken(): string | null {
-  try {
-    return window.localStorage.getItem(TOKEN_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
 export function resolvePipelineIds() {
   if (resolution === null) {
-    resolution = fetchPipelines(getStoredToken()).then(resolveFrom);
+    resolution = fetchPipelines().then(resolveFrom);
     resolution.catch(() => {
       resolution = null;
     });
@@ -75,15 +67,4 @@ export async function refinementPipelineId(): Promise<string> {
 
 export async function s2NodeId(): Promise<string> {
   return (await resolvePipelineIds()).s2NodeId;
-}
-
-export const TOKEN_STORAGE_KEY = "repaircad.flowToken";
-
-export function readStoredToken(): string | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return window.localStorage.getItem(TOKEN_STORAGE_KEY);
-  } catch {
-    return null;
-  }
 }

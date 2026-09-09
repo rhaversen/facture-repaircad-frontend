@@ -68,9 +68,15 @@ export default function CalibrationPanel({
 
   const setCount = Object.keys(confirmedValues).length;
 
+  /*
+    On wide screens the panel is capped to its row height; the parameter list
+    is the only scroller with the heading above and the OK footer pinned, so
+    finishing never requires scrolling the page. When stacked it grows with
+    content and the page scrolls normally.
+  */
   return (
-    <div className="flex max-h-[720px] flex-col gap-4 overflow-y-auto rounded-xl border border-line p-4.5 pr-5">
-      <div>
+    <div className="flex min-h-0 flex-col gap-4 rounded-xl border border-line p-4.5 pr-5 lg:w-[380px] lg:shrink-0">
+      <div className="lg:shrink-0">
         <h2 className="mb-1.5 text-lg">Calibrate the model</h2>
         <p className="mt-2.5 text-[13px] text-[#8a93a1]">
           Previews render one parameter at a time — a parameter is sweepable as
@@ -82,7 +88,7 @@ export default function CalibrationPanel({
         </p>
       </div>
 
-      <div className="flex flex-col gap-3.5">
+      <div className="flex min-h-0 flex-col gap-3.5 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain">
         {parameters.map((param) => {
           const sweep = paramSweeps[param.name] ?? null;
           const confirmed = confirmedValues[param.name];
@@ -230,7 +236,7 @@ export default function CalibrationPanel({
         })}
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4 lg:shrink-0">
         <button
           type="button"
           className="bg-brand px-4 py-1.5 text-sm font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] hover:bg-brand-dark"

@@ -38,6 +38,8 @@ interface AnnotationCanvasProps {
   onPointerDown: (event: React.PointerEvent) => void;
   onPointerMove: (event: React.PointerEvent) => void;
   onPointerUp: (event: React.PointerEvent) => void;
+  /* Compact height budget for use inside a bounded sidebar pane. */
+  compact?: boolean;
 }
 
 /*
@@ -54,6 +56,7 @@ export default function AnnotationCanvas({
   onPointerDown,
   onPointerMove,
   onPointerUp,
+  compact = false,
 }: AnnotationCanvasProps) {
   return (
     <div className="flex items-start justify-center">
@@ -69,7 +72,9 @@ export default function AnnotationCanvas({
           src={imageUrl}
           alt={imageAlt}
           draggable="false"
-          className="mx-auto block h-auto max-h-[calc(100vh_-_320px)] w-auto max-w-full pointer-events-none"
+          className={`mx-auto block h-auto w-auto max-w-full pointer-events-none ${
+            compact ? "max-h-[40vh]" : "max-h-[calc(100vh_-_320px)]"
+          }`}
         />
 
         {annotations.map((annotation) => (

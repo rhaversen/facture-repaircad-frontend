@@ -1,6 +1,6 @@
 "use client";
 
-import {
+import React, {
   Suspense,
   useEffect,
   useLayoutEffect,
@@ -10,6 +10,8 @@ import {
 } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
+import { Timer } from "three";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import * as THREE from "three";
 
 import { SWEEP_FPS } from "@/lib/config";
@@ -28,6 +30,165 @@ export function Model({ mesh }: { mesh: THREE_Group }) {
       <primitive object={mesh} />
     </group>
   );
+}
+
+/*
+  Clock-shaped adapter over THREE.Timer so the R3F render loop stops using the
+  deprecated THREE.Clock. R3F only touches getDelta(), elapsedTime, oldTime,
+  start() and stop(); Timer additionally freezes deltas while the tab is
+  hidden. Created per canvas and installed via onCreated.
+*/
+function createTimerClock(): THREE.Clock {
+  const timer = new Timer();
+  let connected = false;
+  const ensureConnected = () => {
+    if (!connected && typeof document !== "undefined") {
+      timer.connect(document);
+      connected = true;
+    }
+  };
+  const clock = {
+    autoStart: true,
+    running: true,
+    oldTime: 0,
+    elapsedTime: 0,
+    start() {
+      ensureConnected();
+      clock.elapsedTime = 0;
+      timer.reset();
+    },
+    stop() {},
+    getDelta() {
+      ensureConnected();
+      timer.update(performance.now());
+      clock.elapsedTime = timer.getElapsed();
+      return timer.getDelta();
+    },
+    getElapsedTime() {
+      return clock.elapsedTime;
+    },
+  };
+  return clock as unknown as THREE.Clock;
+}
+
+/*
+  Studio lighting copied from facture-forge-frontend's createSceneCore: a
+  PMREM-baked room environment is the dominant light source, with a warm-cool
+  key/rim directional pair for shape definition and a faint hemisphere fill so
+  shadowed sides never go fully black.
+*/
+function ForgeStudio({
+  fitKey,
+  fitMesh,
+}: {
+  fitKey?: string | null;
+  fitMesh?: THREE_Group | null;
+} = {}) {
+  const gl = useThree((state) => state.gl);
+  const scene = useThree((state) => state.scene);
+  const keyRef = useRef<THREE.DirectionalLight>(null);
+
+  useEffect(() => {
+    const pmrem = new THREE.PMREMGenerator(gl);
+    const env = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+    const previous = scene.environment;
+    // Imperative three.js scene mutation is intentional here.
+    /* eslint-disable react-hooks/immutability */
+    scene.environment = env;
+    scene.environmentIntensity = 0.65;
+    return () => {
+      scene.environment = previous;
+      env.dispose();
+    };
+    /* eslint-enable react-hooks/immutability */
+  }, [gl, scene]);
+
+  /*
+    Refit the shadow camera to the mesh bounds on each load so small and
+    large models both get crisp contact shadows, and enable casting on the
+    3MF meshes (loaders leave it off by default).
+  */
+  useEffect(() => {
+    const light = keyRef.current;
+    if (!light || !fitMesh) return;
+    fitMesh.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+      }
+    });
+    const box = new THREE.Box3().setFromObject(fitMesh);
+    if (box.isEmpty()) return;
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    const cam = light.shadow.camera;
+    cam.left = -sphere.radius;
+    cam.right = sphere.radius;
+    cam.top = sphere.radius;
+    cam.bottom = -sphere.radius;
+    cam.near = 0.1;
+    // Orthographic depth along the light direction; pad the far plane so
+    // the whole scene fits regardless of light distance.
+    cam.far = sphere.radius * 4 + light.position.length();
+    cam.updateProjectionMatrix();
+    light.shadow.needsUpdate = true;
+  }, [fitKey, fitMesh]);
+
+  return (
+    <>
+      <hemisphereLight args={[0xffffff, 0x334455, 0.2]} />
+      <directionalLight
+        ref={keyRef}
+        color={0xfff4e6}
+        position={[120, 180, 100]}
+        intensity={0.9}
+        castShadow
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
+        shadow-bias={-0.0002}
+        shadow-normalBias={0.02}
+        shadow-radius={4}
+      />
+      {/* Rim/back light from behind-opposite the key: separates silhouettes
+          from the background without adding a shadow pass. */}
+      <directionalLight color={0xdfe8ff} position={[-100, 80, -140]} intensity={0.35} />
+    </>
+  );
+}
+
+/*
+  R3F canvases can throw during teardown races (a canvas unmounting in the
+  same commit another mounts can hit a null event target). Contain the blast
+  radius: the affected tile shows a fallback instead of the app crashing.
+*/
+class CanvasErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(error: unknown) {
+    console.error("CAD viewport crashed:", error);
+  }
+  render() {
+    if (this.state.failed) {
+      return (
+        <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center text-ink-soft">
+          <p>Viewport could not start.</p>
+          <button
+            type="button"
+            className="btn-secondary mt-3"
+            onClick={() => this.setState({ failed: false })}
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function LoadingSpinner() {
@@ -222,23 +383,19 @@ export function CadCanvas({
   fitMesh: THREE_Group | null;
 }) {
   return (
-    <Canvas
-      shadows
-      camera={{ position: [12, 9, 18], fov: 45, near: 0.01, far: 2000 }}
-      style={{ width: "100%", height: "100%", background: "#ffffff" }}
-    >
-      <ambientLight intensity={0.4} />
-      <directionalLight
-        position={[5, 8, 5]}
-        intensity={1.2}
-        castShadow
-        shadow-mapSize-width={1024}
-        shadow-mapSize-height={1024}
-      />
-      <Suspense fallback={generating ? <LoadingSpinner /> : null}>{children}</Suspense>
-      <CameraFit fitKey={fitKey} mesh={fitMesh} />
-      <OrbitControls makeDefault enableDamping dampingFactor={0.1} minDistance={0.001} maxDistance={Infinity} />
-    </Canvas>
+    <CanvasErrorBoundary>
+      <Canvas
+        shadows={{ type: THREE.PCFSoftShadowMap }}
+        camera={{ position: [12, 9, 18], fov: 45, near: 0.01, far: 2000 }}
+        style={{ width: "100%", height: "100%", background: "#ffffff" }}
+        onCreated={(state) => state.set({ clock: createTimerClock() })}
+      >
+        <ForgeStudio fitKey={fitKey} fitMesh={fitMesh} />
+        <Suspense fallback={generating ? <LoadingSpinner /> : null}>{children}</Suspense>
+        <CameraFit fitKey={fitKey} mesh={fitMesh} />
+        <OrbitControls makeDefault enableDamping dampingFactor={0.1} minDistance={0.001} maxDistance={Infinity} />
+      </Canvas>
+    </CanvasErrorBoundary>
   );
 }
 
@@ -348,11 +505,9 @@ function PickerModel({
 
 export function DesignPicker({
   variants,
-  onChoose,
   onSelect,
 }: {
   variants: DesignVariant[];
-  onChoose?: (designId: string) => void;
   onSelect?: (designId: string) => void;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -466,32 +621,37 @@ export function DesignPicker({
                 }`}
               >
                 {bounds !== null ? (
-                  <Canvas
-                    frameloop={visible ? "always" : "never"}
-                    camera={cameraConfig}
-                    dpr={[1, 1.5]}
-                    style={{ width: "100%", height: "100%", background: "#ffffff" }}
-                  >
-                    <ambientLight intensity={0.5} />
-                    <directionalLight position={[5, 8, 5]} intensity={1.4} />
-                    <Suspense fallback={null}>
-                      <PickerModel
-                        mesh={variant.mesh!}
-                        center={bounds.center}
-                        orbit={orbit}
-                        tileId={variant.designId}
+                  <CanvasErrorBoundary>
+                    <Canvas
+                      frameloop={visible ? "always" : "never"}
+                      camera={cameraConfig}
+                      dpr={[1, 1.5]}
+                      shadows={{ type: THREE.PCFSoftShadowMap }}
+                      style={{ width: "100%", height: "100%", background: "#ffffff" }}
+                      onCreated={(state) => state.set({ clock: createTimerClock() })}
+                    >
+                      <ForgeStudio fitKey={variant.designId} fitMesh={variant.mesh} />
+                      <Suspense fallback={null}>
+                        <PickerModel
+                          mesh={variant.mesh!}
+                          center={bounds.center}
+                          orbit={orbit}
+                          tileId={variant.designId}
+                        />
+                      </Suspense>
+                      <OrbitControls
+                        makeDefault
+                        enableDamping
+                        dampingFactor={0.1}
+                        /* Zoom off so the wheel keeps scrolling the page over picker tiles. */
+                        enableZoom={false}
+                        minDistance={0.001}
+                        maxDistance={Infinity}
+                        onStart={pauseOrbit(variant.designId)}
+                        onEnd={scheduleOrbitResume}
                       />
-                    </Suspense>
-                    <OrbitControls
-                      makeDefault
-                      enableDamping
-                      dampingFactor={0.1}
-                      minDistance={0.001}
-                      maxDistance={Infinity}
-                      onStart={pauseOrbit(variant.designId)}
-                      onEnd={scheduleOrbitResume}
-                    />
-                  </Canvas>
+                    </Canvas>
+                  </CanvasErrorBoundary>
                 ) : (
                   <div className="absolute inset-0 flex flex-col items-center justify-center text-ink-soft">
                     <div className="cad-spinner" />
@@ -518,7 +678,6 @@ export function DesignPicker({
                   onClick={() => {
                     setSelectedId(variant.designId);
                     onSelect?.(variant.designId);
-                    onChoose?.(variant.designId);
                   }}
                 >
                   {variant.status !== "ready"

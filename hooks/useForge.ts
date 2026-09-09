@@ -370,11 +370,14 @@ export function useForge() {
 
         const checkAllSettled = () => {
           if (pickResolved || settledCount < DESIGN_VARIANTS) return;
-          chooseResolverRef.current = null;
-          allFailedRejectRef.current = null;
           if (okCount === 0) {
+            // Every variant failed: no candidate can ever be picked, so
+            // reject the park instead of leaving it waiting on the user.
+            chooseResolverRef.current = null;
             rejectChosenPromise();
           }
+          // With successful candidates the resolver must stay installed —
+          // the round is still parked on the user's pick.
         };
 
         // Latest mesh per variant id, so a mid-stream pick can reuse the tile.

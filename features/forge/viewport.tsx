@@ -643,8 +643,6 @@ export function DesignPicker({
                         makeDefault
                         enableDamping
                         dampingFactor={0.1}
-                        /* Zoom off so the wheel keeps scrolling the page over picker tiles. */
-                        enableZoom={false}
                         minDistance={0.001}
                         maxDistance={Infinity}
                         onStart={pauseOrbit(variant.designId)}

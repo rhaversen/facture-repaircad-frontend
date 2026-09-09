@@ -7,50 +7,26 @@ import { FORGE_MODEL, FORGE_REASONING_EFFORT } from "@/lib/config";
 import type { ForgeDesign } from "@/lib/types";
 
 /*
-  Forge resolves the same Facture access token as Flow (Bearer → token
-  owner), so RepairCAD never needs a separate Forge login or cookie. The
-  backend answers token calls with `*` CORS, which browsers reject on
-  credentialed requests — Bearer-only it is.
+  Forge shares the Facture session cookie, so RepairCAD never needs a
+  separate Forge login.
 */
-const forgeAxios = axios.create({ baseURL: FORGE_BASE });
-
-let forgeAccessToken: string | null = null;
-
-export function setForgeToken(token: string | null) {
-  forgeAccessToken = token && token.length > 0 ? token : null;
-}
-
-function authConfig() {
-  return forgeAccessToken === null
-    ? {}
-    : { headers: { Authorization: `Bearer ${forgeAccessToken}` } };
-}
-
-function forgeHeaders(extra: Record<string, string> = {}) {
-  return forgeAccessToken === null
-    ? { ...extra }
-    : { Authorization: `Bearer ${forgeAccessToken}`, ...extra };
-}
+const forgeAxios = axios.create({ baseURL: FORGE_BASE, withCredentials: true });
 
 export async function createDesign(): Promise<string> {
-  const res = await forgeAxios.post("/designs", undefined, authConfig());
+  const res = await forgeAxios.post("/designs");
   return res.data._id;
 }
 
 /** Copy an existing design (tree + parameter values) into a new document. */
 export async function duplicateDesign(designId: string): Promise<string> {
-  const res = await forgeAxios.post(
-    `/designs/${designId}/duplicate`,
-    undefined,
-    authConfig(),
-  );
+  const res = await forgeAxios.post(`/designs/${designId}/duplicate`);
   return res.data._id;
 }
 
 /** Ask Forge to stop the design's running turn at its next step boundary. */
 export async function stopDesign(designId: string): Promise<void> {
   try {
-    await forgeAxios.post(`/designs/${designId}/stop`, undefined, authConfig());
+    await forgeAxios.post(`/designs/${designId}/stop`);
   } catch (err) {
     if (axios.isAxiosError(err) && err.response?.status !== 404) throw err;
   }
@@ -59,26 +35,24 @@ export async function stopDesign(designId: string): Promise<void> {
 /** Merge-patch the design's parameter values: each sent key sets that param's
  *  user value, null clears it, keys not sent are untouched. */
 export async function patchParameters(designId: string, values: Record<string, number>) {
-  const res = await forgeAxios.patch(
-    `/designs/${designId}/parameters`,
-    { values },
-    authConfig(),
-  );
+  const res = await forgeAxios.patch(`/designs/${designId}/parameters`, {
+    values,
+  });
   return res.data;
 }
 
 export async function sendDesignMessage(designId: string, message: string) {
-  await forgeAxios.post(
-    `/designs/${designId}/chat`,
-    { message, model: FORGE_MODEL, reasoningEffort: FORGE_REASONING_EFFORT },
-    authConfig(),
-  );
+  await forgeAxios.post(`/designs/${designId}/chat`, {
+    message,
+    model: FORGE_MODEL,
+    reasoningEffort: FORGE_REASONING_EFFORT,
+  });
 }
 
 /** Fetch a design's user-facing projection. Returns null on 404. */
 export async function getDesign(designId: string): Promise<ForgeDesign | null> {
   try {
-    const res = await forgeAxios.get(`/designs/${designId}`, authConfig());
+    const res = await forgeAxios.get(`/designs/${designId}`);
     return res.data.design;
   } catch (err) {
     if (axios.isAxiosError(err) && err.response?.status === 404) return null;
@@ -89,7 +63,6 @@ export async function getDesign(designId: string): Promise<ForgeDesign | null> {
 /** Fetch the on-demand 3MF render as raw bytes. Returns null on 204. */
 export async function getDesign3mfBytes(designId: string): Promise<ArrayBuffer | null> {
   const res = await forgeAxios.get(`/designs/${designId}/3mf`, {
-    ...authConfig(),
     responseType: "arraybuffer",
     validateStatus: (s) => s === 200 || s === 204,
   });
@@ -107,7 +80,6 @@ export async function renderDesignWithParams(
     `/designs/${designId}/renders`,
     { values },
     {
-      ...authConfig(),
       responseType: "arraybuffer",
       validateStatus: (s) => s === 200 || s === 204,
     },
@@ -133,7 +105,8 @@ export async function* subscribeDesignStream(
   signal: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
   const res = await fetch(`${FORGE_BASE}/designs/${designId}/stream`, {
-    headers: forgeHeaders({ Accept: "text/event-stream" }),
+    headers: { Accept: "text/event-stream" },
+    credentials: "include",
     signal,
   });
 

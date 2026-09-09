@@ -33,15 +33,13 @@ export function useRefinementRun() {
 
   const initialize = useCallback(
     async ({
-      accessToken,
       handoffMarkdown,
       designId,
     }: {
-      accessToken: string;
       handoffMarkdown: string;
       designId: string;
     }): Promise<string | null> => {
-      if (!accessToken || !handoffMarkdown?.trim() || !designId) {
+      if (!handoffMarkdown?.trim() || !designId) {
         return null;
       }
 
@@ -58,7 +56,7 @@ export function useRefinementRun() {
 
       const work = (async () => {
         try {
-          const created = await createRefinementRun(accessToken);
+          const created = await createRefinementRun();
           const createdRunId = created?._id;
           if (!createdRunId) {
             throw new Error("Flow did not return a refinement run ID.");
@@ -78,7 +76,6 @@ export function useRefinementRun() {
           ].join("\n");
 
           const response = await postMessage(
-            accessToken,
             createdRunId,
             bootstrapMessage,
           );
@@ -113,12 +110,12 @@ export function useRefinementRun() {
   );
 
   const reconcile = useCallback(
-    async (accessToken: string): Promise<FlowRun | null> => {
-      if (!runIdRef.current || !accessToken) {
+    async (): Promise<FlowRun | null> => {
+      if (!runIdRef.current) {
         return null;
       }
       try {
-        const runs = await fetchRuns(accessToken);
+        const runs = await fetchRuns();
         const latestRun = runs.find((candidate) => candidate._id === runIdRef.current);
         if (!latestRun) return null;
         setRun(latestRun);
@@ -138,14 +135,14 @@ export function useRefinementRun() {
     screen picks up via reconcile() and forwards to Forge.
   */
   const sendMessage = useCallback(
-    async (accessToken: string, content: string) => {
-      if (!runIdRef.current || !accessToken || !content?.trim()) {
+    async (content: string) => {
+      if (!runIdRef.current || !content?.trim()) {
         throw new Error("Refinement run is not ready.");
       }
       setSending(true);
       try {
-        await postMessage(accessToken, runIdRef.current, content.trim());
-        await reconcile(accessToken);
+        await postMessage(runIdRef.current, content.trim());
+        await reconcile();
       } catch (err) {
         console.error("Could not send refinement message:", err);
         throw err;

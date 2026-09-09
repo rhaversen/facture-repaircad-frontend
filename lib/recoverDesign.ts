@@ -33,19 +33,17 @@ function extractDesignId(text: string): string | null {
   Returns the newest matching design id, or null when nothing matches.
 */
 export async function recoverDesignIdForRun({
-  accessToken,
   handoffMarkdown,
 }: {
-  accessToken: string;
   handoffMarkdown: string;
 }): Promise<string | null> {
   const needle = handoffMarkdown?.trim();
-  if (!accessToken || !needle) return null;
+  if (!needle) return null;
 
   let runs;
   try {
     const refinementPipeline = await refinementPipelineId();
-    const all = await fetchRuns(accessToken);
+    const all = await fetchRuns();
     runs = all.filter(
       (candidate) => candidate.pipelineId === refinementPipeline,
     );
@@ -62,7 +60,7 @@ export async function recoverDesignIdForRun({
 
   for (const candidate of runs) {
     try {
-      const messages = await fetchMessages(accessToken, candidate._id);
+      const messages = await fetchMessages(candidate._id);
       for (const message of messages) {
         const text = messageText(message);
         if (!text.includes(needle)) continue;

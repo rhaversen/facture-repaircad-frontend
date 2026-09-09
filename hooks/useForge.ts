@@ -8,7 +8,6 @@ import {
 } from "@/lib/config";
 import { deriveLowHigh, midpoint, isCalibratable } from "@/lib/forgeParams";
 import {
-  setForgeToken,
   createDesign,
   duplicateDesign,
   stopDesign,
@@ -296,19 +295,12 @@ export function useForge() {
 
   const generate = useCallback(
     async ({
-      accessToken,
       handoffMarkdown,
       runId,
     }: {
-      accessToken: string;
       handoffMarkdown: string;
       runId: string | null;
     }) => {
-      if (!accessToken) {
-        setError("Missing access token — please reconnect.");
-        setPhase("error");
-        return;
-      }
       if (!handoffMarkdown?.trim()) {
         setError("No CAD handoff document was produced by the pipeline.");
         setPhase("error");
@@ -339,8 +331,6 @@ export function useForge() {
       setDesignId(null);
 
       try {
-        setForgeToken(accessToken);
-
         /*
           Phase 1: DESIGN_VARIANTS fully independent designs are generated
           from the same handoff at once. The picker opens on the first tile;
@@ -531,7 +521,7 @@ export function useForge() {
           (err instanceof Error ? err.message : "Forge generation failed.");
         setError(
           msg === "Unauthorized"
-            ? "Forge rejected the access token (Unauthorized). Ensure the token is valid and that Forge accepts it."
+            ? "Forge rejected your session (Unauthorized). Please sign in again."
             : msg,
         );
         setPhase("error");
@@ -683,11 +673,9 @@ export function useForge() {
   */
   const rehydrate = useCallback(
     async ({
-      accessToken,
       runId,
       handoffMarkdown,
     }: {
-      accessToken: string;
       runId: string | null;
       handoffMarkdown: string;
     }): Promise<boolean> => {
@@ -698,7 +686,6 @@ export function useForge() {
       // message.
       if (stored === null && handoffMarkdown?.trim()) {
         const recoveredId = await recoverDesignIdForRun({
-          accessToken,
           handoffMarkdown,
         });
         if (recoveredId) {
@@ -726,8 +713,6 @@ export function useForge() {
       setError("");
 
       try {
-        setForgeToken(accessToken);
-
         let targetDesignId: string | undefined = stored.designId;
 
         /*
@@ -836,18 +821,12 @@ export function useForge() {
 
   const refineExistingDesign = useCallback(
     async ({
-      accessToken,
       instruction,
       runId,
     }: {
-      accessToken: string;
       instruction: string;
       runId: string | null;
     }): Promise<boolean> => {
-      if (!accessToken) {
-        setError("Missing access token — please reconnect.");
-        return false;
-      }
       if (!designId) {
         setError("No existing Forge design is available to refine.");
         return false;
@@ -877,8 +856,6 @@ export function useForge() {
       setParameters([]);
 
       try {
-        setForgeToken(accessToken);
-
         // Subscribe before sending the message so we do not miss the
         // beginning of Forge's regeneration stream.
         const stream = subscribeDesignStream(designId, signal);
@@ -979,12 +956,10 @@ export function useForge() {
   */
   const duplicateAndRefine = useCallback(
     async ({
-      accessToken,
       feedback,
       sourceDesignId,
       runId,
     }: {
-      accessToken: string;
       feedback: string;
       sourceDesignId: string | null;
       runId: string | null;
@@ -1033,8 +1008,6 @@ export function useForge() {
       setVariants([]);
 
       try {
-        setForgeToken(accessToken);
-
         // The source tile exists immediately (spinner), the duplicate tiles
         // appear as their copy requests resolve.
         const startedVariantIds = [source];

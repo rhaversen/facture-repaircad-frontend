@@ -13,7 +13,7 @@ const isDev = process.env.NODE_ENV === "development";
 */
 const CHAT_MODELS = isDev
   ? { flow: "natai/glm-flash", forge: "natai/glm-flash" }
-  : { flow: "google/gemini-3.8-flash", forge: "google/gemini-3.8-flash" };
+  : { flow: "google/gemini-3.8-flash", forge: "google/gemini-3.1-pro-preview" };
 
 export const FLOW_MODEL = CHAT_MODELS.flow;
 export const FORGE_MODEL = CHAT_MODELS.forge;

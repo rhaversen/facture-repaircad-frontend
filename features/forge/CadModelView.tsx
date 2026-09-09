@@ -333,8 +333,8 @@ export default function CadModelView({
             </div>
           </div>
         ) : phase === "choosing" ? (
-          <div className="flex min-h-[calc(100dvh-230px)] flex-1 flex-col gap-5 lg:min-h-0">
-            <div className="flex min-h-[560px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
+          <div className="flex flex-col gap-5">
+            <div className="flex flex-col gap-6 lg:flex-row lg:items-stretch">
               <section className="min-h-0 min-w-0 flex-1">
                 <div className="mb-6">
                   <h1 className="text-[30px]">Choose a rough shape for the design</h1>
@@ -366,7 +366,7 @@ export default function CadModelView({
               />
             </div>
 
-            <div className="mt-auto flex w-full shrink-0 flex-col items-start gap-2.5 rounded-xl border border-line-soft bg-surface p-5">
+            <div className="flex w-full shrink-0 flex-col items-start gap-2.5 rounded-xl border border-line-soft bg-surface p-5">
               {(() => {
                 const chosenVariant = variants.find(
                   (v) => v.designId === pickerSelectedId,

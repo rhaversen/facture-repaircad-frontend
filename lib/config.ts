@@ -12,7 +12,7 @@ const isDev = process.env.NODE_ENV === "development";
   dev. Production routes through OpenRouter instead.
 */
 const CHAT_MODELS = isDev
-  ? { flow: "natai/glm-flash", forge: "natai/glm-flash" }
+  ? { flow: "natai/glm-flash-instant", forge: "natai/glm-flash-instant" }
   : { flow: "google/gemini-3.8-flash", forge: "google/gemini-3.1-pro-preview" };
 
 export const FLOW_MODEL = CHAT_MODELS.flow;

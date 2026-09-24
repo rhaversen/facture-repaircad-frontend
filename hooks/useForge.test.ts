@@ -89,7 +89,7 @@ function mockSuccessfulGeneration() {
   vi.mocked(forgeClient.getDesign3mfBytes).mockResolvedValue(new ArrayBuffer(8));
   // No calibratable parameters → generation goes straight to ready on pick.
   vi.mocked(forgeClient.getDesign).mockResolvedValue({
-    overview: { leaves: [], assemblies: [], parameters: [] },
+    overview: { parameters: [] },
   });
 }
 
@@ -242,7 +242,7 @@ describe("useForge variant selection", () => {
       }),
     );
     vi.mocked(forgeClient.getDesign).mockResolvedValue({
-      overview: { leaves: [], assemblies: [], parameters: [] },
+      overview: { parameters: [] },
     });
     vi.mocked(forgeClient.getDesign3mfBytes).mockResolvedValue(new ArrayBuffer(8));
 
@@ -293,7 +293,7 @@ describe("useForge picker SSE handling", () => {
     );
     vi.mocked(forgeClient.sendDesignMessage).mockResolvedValue(undefined);
     vi.mocked(forgeClient.getDesign).mockResolvedValue({
-      overview: { leaves: [], assemblies: [], parameters: [] },
+      overview: { parameters: [] },
     });
     vi.mocked(forgeClient.getDesign3mfBytes).mockResolvedValue(new ArrayBuffer(8));
   });

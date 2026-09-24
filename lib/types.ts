@@ -90,8 +90,6 @@ export interface ForgeParameter {
 }
 
 export interface ForgeOverview {
-  leaves: unknown[];
-  assemblies: unknown[];
   parameters: ForgeParameter[];
 }
 

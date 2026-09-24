@@ -10,7 +10,7 @@ import { FlowChatFrame } from "@/features/chat/FlowChatEmbed";
 import { useRefinementRun } from "@/hooks/useRefinementRun";
 import { useForge } from "@/hooks/useForge";
 import { useDesignExists } from "@/hooks/useDesignExists";
-import { getDesign3mfBytes } from "@/lib/forgeClient";
+import { getDesignMeshBytes } from "@/lib/forgeClient";
 import { formatParamName } from "@/lib/forgeParams";
 import {
   CadCanvas,
@@ -247,19 +247,19 @@ export default function CadModelView({
     URL.revokeObjectURL(url);
   }
 
-  async function handleDownload3mf() {
+  async function handleDownloadMesh() {
     if (designId === null) return;
     try {
-      const bytes = await getDesign3mfBytes(designId);
+      const bytes = await getDesignMeshBytes(designId);
       if (bytes === null) return;
-      const url = URL.createObjectURL(new Blob([bytes], { type: "model/3mf" }));
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
       const link = document.createElement("a");
       link.href = url;
-      link.download = `repaircad-${designId}.3mf`;
+      link.download = `repaircad-${designId}.fmsh`;
       link.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      console.error("3MF download failed:", err);
+      console.error("Mesh download failed:", err);
     }
   }
 
@@ -476,8 +476,8 @@ export default function CadModelView({
               {phase === "ready" && (
                 <div className="mt-6 flex shrink-0 gap-3">
                   {designId !== null && (
-                    <button type="button" className="btn-secondary" onClick={handleDownload3mf}>
-                      Download 3MF
+                    <button type="button" className="btn-secondary" onClick={handleDownloadMesh}>
+                      Download mesh
                     </button>
                   )}
                   {finalGuidance && (

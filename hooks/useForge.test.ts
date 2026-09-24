@@ -40,9 +40,10 @@ vi.mock("@/lib/forgeClient", async (importOriginal) => {
     stopDesign: vi.fn(),
     sendDesignMessage: vi.fn(),
     getDesign: vi.fn(),
-    getDesign3mfBytes: vi.fn(),
+    getDesignMesh: vi.fn(),
     subscribeDesignStream: vi.fn(),
-    // The real parsers run THREE's 3MF loader; tests hand back plain bytes.
+    // The real parsers decode binary FMSH mesh payloads; tests hand back
+    // plain stand-ins.
     parseMeshBase64: vi.fn(() => ({}) as never),
     parseMeshArrayBuffer: vi.fn(() => ({}) as never),
   };
@@ -86,7 +87,7 @@ function mockSuccessfulGeneration() {
     yield meshEvent();
     yield endEvent();
   });
-  vi.mocked(forgeClient.getDesign3mfBytes).mockResolvedValue(new ArrayBuffer(8));
+  vi.mocked(forgeClient.getDesignMesh).mockResolvedValue({ children: [] } as never);
   // No calibratable parameters → generation goes straight to ready on pick.
   vi.mocked(forgeClient.getDesign).mockResolvedValue({
     overview: { parameters: [] },
@@ -215,7 +216,7 @@ describe("useForge variant selection", () => {
         },
       }),
     );
-    vi.mocked(forgeClient.getDesign3mfBytes).mockResolvedValue(new ArrayBuffer(8));
+    vi.mocked(forgeClient.getDesignMesh).mockResolvedValue({ children: [] } as never);
     // parseMeshBase64 on an empty payload must not crash the round.
 
     const { result } = renderHook(() => useForge());
@@ -244,7 +245,7 @@ describe("useForge variant selection", () => {
     vi.mocked(forgeClient.getDesign).mockResolvedValue({
       overview: { parameters: [] },
     });
-    vi.mocked(forgeClient.getDesign3mfBytes).mockResolvedValue(new ArrayBuffer(8));
+    vi.mocked(forgeClient.getDesignMesh).mockResolvedValue({ children: [] } as never);
 
     const { result } = renderHook(() => useForge());
     let restored = false;
@@ -295,7 +296,7 @@ describe("useForge picker SSE handling", () => {
     vi.mocked(forgeClient.getDesign).mockResolvedValue({
       overview: { parameters: [] },
     });
-    vi.mocked(forgeClient.getDesign3mfBytes).mockResolvedValue(new ArrayBuffer(8));
+    vi.mocked(forgeClient.getDesignMesh).mockResolvedValue({ children: [] } as never);
   });
 
   afterEach(() => {
@@ -350,7 +351,7 @@ describe("useForge picker SSE handling", () => {
     expect(text).toContain("event: end");
   });
 
-  it("marks surviving tiles ready via the 3MF fetch", async () => {
+  it("marks surviving tiles ready via the mesh fetch", async () => {
     vi.mocked(forgeClient.subscribeDesignStream).mockImplementation(
       async function* () {
         yield endEvent();
@@ -369,7 +370,7 @@ describe("useForge picker SSE handling", () => {
     await poll(
       () => result.current.phase === "ready" || result.current.phase === "error",
     );
-    expect(forgeClient.getDesign3mfBytes).toHaveBeenCalledWith("id-1");
+    expect(forgeClient.getDesignMesh).toHaveBeenCalledWith("id-1");
     expect(result.current.phase).toBe("ready");
   });
 

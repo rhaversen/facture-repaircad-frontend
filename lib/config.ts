@@ -26,6 +26,3 @@ export const FORGE_REASONING_EFFORT = "low";
 // per parameter; the viewport plays them as a ping-pong loop at SWEEP_FPS.
 export const SWEEP_RENDER_STEPS = 15;
 export const SWEEP_FPS = 24;
-
-// Parallel independent Forge designs per candidate round.
-export const DESIGN_VARIANTS = 3;

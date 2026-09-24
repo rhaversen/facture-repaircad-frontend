@@ -19,6 +19,7 @@ import {
   handoffReadyFor,
   screenForSelectedRun,
 } from "@/lib/runProgress";
+import { collectHandoffs } from "@/lib/handoffs";
 import { s2NodeId } from "@/lib/pipeline";
 
 /*
@@ -90,7 +91,7 @@ export default function RepairCADApp() {
       });
   }, [authChecked, s2NodeIdValue]);
 
-  const handoffMarkdown = runningDoc?.provisional_cad_handoff?.trim() ?? "";
+  const handoffs = collectHandoffs(runningDoc);
 
   const waitingForCaseClarification =
     run?.status === "idle" &&
@@ -101,7 +102,7 @@ export default function RepairCADApp() {
   const screen = deriveScreen({
     run,
     messages,
-    handoffMarkdown,
+    handoffs,
     handoffDismissed,
     requestedScreen,
   });
@@ -109,9 +110,9 @@ export default function RepairCADApp() {
   // Re-arm the CAD auto-advance whenever the handoff clears (e.g. a new
   // turn restarts the pipeline), so the next handoff advances again.
   const [prevHandoffReady, setPrevHandoffReady] = useState(
-    handoffReadyFor(run, handoffMarkdown),
+    handoffReadyFor(run, handoffs),
   );
-  const currentHandoffReady = handoffReadyFor(run, handoffMarkdown);
+  const currentHandoffReady = handoffReadyFor(run, handoffs);
   if (prevHandoffReady !== currentHandoffReady) {
     setPrevHandoffReady(currentHandoffReady);
     if (!currentHandoffReady) setHandoffDismissed(false);
@@ -404,7 +405,7 @@ export default function RepairCADApp() {
   if (screen === CAD_SCREEN) {
     return (
       <CadModelView
-        handoffMarkdown={handoffMarkdown}
+        handoffs={handoffs}
         runId={activeRunId}
         onBack={() => {
           setHandoffDismissed(true);

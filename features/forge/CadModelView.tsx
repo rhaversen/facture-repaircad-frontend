@@ -25,7 +25,7 @@ import CalibrationPanel, {
 } from "./CalibrationPanel";
 
 interface CadModelViewProps {
-  handoffMarkdown: string;
+  handoffs: string[];
   runId: string | null;
   onBack: () => void;
   onNewRun: () => void;
@@ -42,7 +42,7 @@ interface CadModelViewProps {
   orientation throughout.
 */
 export default function CadModelView({
-  handoffMarkdown,
+  handoffs,
   runId,
   onBack,
   onNewRun,
@@ -58,6 +58,7 @@ export default function CadModelView({
     statusMessage,
     variants,
     designId,
+    selectedHandoff,
     busy,
     paramSweeps,
     confirmedValues,
@@ -81,7 +82,7 @@ export default function CadModelView({
     rehydrate,
     reset,
     runId,
-    handoffMarkdown,
+    handoffs,
   });
 
   /*
@@ -103,16 +104,17 @@ export default function CadModelView({
   } = useRefinementRun();
 
   useEffect(() => {
-    if (!handoffMarkdown?.trim()) return;
+    const bootstrapHandoff = selectedHandoff ?? handoffs[0] ?? "";
+    if (!bootstrapHandoff.trim()) return;
     const effectiveDesignId = designId ?? variants[0]?.designId ?? null;
     if (!effectiveDesignId) return;
     initializeRefinement({
-      handoffMarkdown,
+      handoffMarkdown: bootstrapHandoff,
       designId: effectiveDesignId,
     }).catch((err) => {
       console.error("Could not start refinement conversation:", err);
     });
-  }, [handoffMarkdown, designId, variants, initializeRefinement]);
+  }, [selectedHandoff, handoffs, designId, variants, initializeRefinement]);
 
   // Keep the refinement run synchronized so forge_instruction / final_guidance
   // produced by R3 becomes visible to this component.
@@ -167,6 +169,7 @@ export default function CadModelView({
         feedback: instruction,
         sourceDesignId,
         runId,
+        variantCount: handoffs.length,
       }).finally(() => {
         setIteratingFeedback(false);
       });
@@ -187,6 +190,7 @@ export default function CadModelView({
     busy,
     runId,
     pickerSelectedId,
+    handoffs.length,
     duplicateAndRefine,
     refineExistingDesign,
   ]);
@@ -225,7 +229,7 @@ export default function CadModelView({
     );
     if (!ok) return;
     reset();
-    generate({ handoffMarkdown, runId });
+    generate({ handoffs, runId });
   }
 
   const finalGuidance = refinementRunningDoc?.final_guidance?.trim() ?? "";
@@ -309,7 +313,7 @@ export default function CadModelView({
               <button
                 type="button"
                 className="mt-4.5 bg-brand px-5 py-3 font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] hover:bg-brand-dark"
-                onClick={() => generate({ handoffMarkdown, runId })}
+                onClick={() => generate({ handoffs, runId })}
               >
                 Generate model
               </button>
@@ -325,7 +329,7 @@ export default function CadModelView({
                 className="btn-secondary mt-4.5"
                 onClick={() => {
                   reset();
-                  generate({ handoffMarkdown, runId });
+                  generate({ handoffs, runId });
                 }}
               >
                 Try again

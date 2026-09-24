@@ -30,7 +30,7 @@ function state(overrides: Partial<ScreenState> = {}): ScreenState {
   return {
     run: null,
     messages: [],
-    handoffMarkdown: "",
+    handoffs: [],
     handoffDismissed: false,
     requestedScreen: CHAT_SCREEN,
     ...overrides,
@@ -140,8 +140,8 @@ describe("deriveScreen", () => {
     expect(
       deriveScreen(
         state({
-          run: run({ runningDoc: { provisional_cad_handoff: "doc" } }),
-          handoffMarkdown: "doc",
+          run: run({ runningDoc: { forge_handoff_1: "doc" } }),
+          handoffs: ["doc"],
         }),
       ),
     ).toBe(CAD_SCREEN);
@@ -151,8 +151,8 @@ describe("deriveScreen", () => {
     expect(
       deriveScreen(
         state({
-          run: run({ runningDoc: { provisional_cad_handoff: "doc" } }),
-          handoffMarkdown: "doc",
+          run: run({ runningDoc: { forge_handoff_1: "doc" } }),
+          handoffs: ["doc"],
           handoffDismissed: true,
         }),
       ),

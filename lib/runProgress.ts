@@ -11,8 +11,8 @@ export interface ScreenState {
   run: FlowRun | null;
   /** Transcript of the active run. */
   messages: FlowMessage[];
-  /** Trimmed provisional_cad_handoff document. */
-  handoffMarkdown: string;
+  /** Handoff documents the pipeline produced, in variant order. */
+  handoffs: string[];
   /** Whether the user backed out of the CAD workspace onto the chat. */
   handoffDismissed: boolean;
   /** The screen the user last navigated to. */
@@ -38,8 +38,11 @@ export function runShowsProgress(run: FlowRun | null): boolean {
   return Object.keys(run.runningDoc ?? {}).length > 0;
 }
 
-export function handoffReadyFor(run: FlowRun | null, handoffMarkdown: string): boolean {
-  return run?.status === "idle" && handoffMarkdown !== "";
+export function handoffReadyFor(
+  run: FlowRun | null,
+  handoffs: string[],
+): boolean {
+  return run?.status === "idle" && handoffs.length > 0;
 }
 
 /** The screen actually rendered, derived from run state on top of the
@@ -47,7 +50,7 @@ export function handoffReadyFor(run: FlowRun | null, handoffMarkdown: string): b
  *  the conversation exists (or the run shows progress); the chat
  *  auto-advances to CAD on a fresh handoff unless the user dismissed it. */
 export function deriveScreen(state: ScreenState): number {
-  const handoffReady = handoffReadyFor(state.run, state.handoffMarkdown);
+  const handoffReady = handoffReadyFor(state.run, state.handoffs);
   const conversationReady =
     handoffReady ||
     (state.run !== null &&

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+	<defs>
+		<linearGradient id="wrench" x1="0" y1="0" x2="1" y2="1">
+			<stop offset="0" stop-color="#60a5fa"/>
+			<stop offset=".55" stop-color="#3b82f6"/>
+			<stop offset="1" stop-color="#1d4ed8"/>
+		</linearGradient>
+	</defs>
+	<rect width="64" height="64" rx="14" fill="#0b0f0d"/>
+	<!-- wrench over a cad block outline -->
+	<g stroke-linejoin="round" stroke-linecap="round">
+		<path d="M18 46 L38 26 M38 26 a8.5 8.5 0 1 0 8 -13 a6.8 6.8 0 0 1 -8.6 8.6 A6.8 6.8 0 0 1 38 26 Z" fill="url(#wrench)"/>
+		<rect x="12" y="50" width="24" height="4" rx="2" fill="#bfdbfe" opacity=".85"/>
+		<rect x="40" y="50" width="12" height="4" rx="2" fill="#bfdbfe" opacity=".45"/>
+	</g>
+</svg>

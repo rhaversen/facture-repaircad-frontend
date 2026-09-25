@@ -12,7 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
 # Create a user within the container
-RUN useradd -m pipeline_frontend_user
+RUN useradd -m repaircad_frontend_user
 
 # Copy .next, public, package.json and package-lock.json
 COPY .next/ ./.next/
@@ -20,10 +20,10 @@ COPY public/ ./public/
 COPY package*.json ./
 
 # Make sure the directory belongs to the non-root user
-RUN chown -R pipeline_frontend_user:pipeline_frontend_user /app
+RUN chown -R repaircad_frontend_user:repaircad_frontend_user /app
 
 # Switch to user for subsequent commands
-USER pipeline_frontend_user
+USER repaircad_frontend_user
 
 # Clean install production dependencies
 RUN npm ci --omit=dev

@@ -1,16 +1,30 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 	<defs>
-		<linearGradient id="wrench" x1="0" y1="0" x2="1" y2="1">
-			<stop offset="0" stop-color="#60a5fa"/>
-			<stop offset=".55" stop-color="#3b82f6"/>
+		<radialGradient id="bg" cx=".3" cy=".25" r="1">
+			<stop offset="0" stop-color="#1a2420"/>
+			<stop offset="1" stop-color="#0b0f0d"/>
+		</radialGradient>
+		<linearGradient id="metal" gradientUnits="userSpaceOnUse" x1="-26" y1="-10" x2="26" y2="10">
+			<stop offset="0" stop-color="#93c5fd"/>
+			<stop offset=".5" stop-color="#3b82f6"/>
 			<stop offset="1" stop-color="#1d4ed8"/>
 		</linearGradient>
+		<mask id="cut" maskUnits="userSpaceOnUse" x="-32" y="-16" width="64" height="32">
+			<rect x="-32" y="-16" width="64" height="32" fill="#fff"/>
+			<rect x="-32" y="-4.5" width="17" height="9" rx="2" fill="#000"/>
+			<circle cx="19.5" cy="0" r="2.6" fill="#000"/>
+		</mask>
+		<g id="w" mask="url(#cut)">
+			<circle cx="-15" cy="0" r="10.5"/>
+			<rect x="-15" y="-3.6" width="36" height="7.2" rx="3.6"/>
+			<circle cx="19.5" cy="0" r="6.2"/>
+		</g>
 	</defs>
-	<rect width="64" height="64" rx="14" fill="#0b0f0d"/>
-	<!-- wrench over a cad block outline -->
-	<g stroke-linejoin="round" stroke-linecap="round">
-		<path d="M18 46 L38 26 M38 26 a8.5 8.5 0 1 0 8 -13 a6.8 6.8 0 0 1 -8.6 8.6 A6.8 6.8 0 0 1 38 26 Z" fill="url(#wrench)"/>
-		<rect x="12" y="50" width="24" height="4" rx="2" fill="#bfdbfe" opacity=".85"/>
-		<rect x="40" y="50" width="12" height="4" rx="2" fill="#bfdbfe" opacity=".45"/>
+	<rect width="64" height="64" rx="14" fill="url(#bg)"/>
+	<g transform="translate(32 32) rotate(-45)">
+		<use href="#w" x="1" y="2.5" fill="#000" opacity=".4"/>
+		<use href="#w" fill="url(#metal)"/>
+		<rect x="-8" y="-2.4" width="24" height="1.4" rx=".7" fill="#dbeafe" opacity=".6"/>
+		<circle cx="-15" cy="-7.5" r="1.6" fill="#dbeafe" opacity=".5"/>
 	</g>
 </svg>

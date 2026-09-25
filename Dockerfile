@@ -5,25 +5,23 @@
 # Use an official Node.js runtime as the base image
 FROM node:24-bookworm-slim
 
-# Use a non-interactive frontend for debconf
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Set working directory
 WORKDIR /app
-
-# Create a user within the container
-RUN useradd -m repaircad_frontend_user
 
 # Copy .next, public, package.json and package-lock.json
 COPY .next/ ./.next/
 COPY public/ ./public/
 COPY package*.json ./
 
-# Make sure the directory belongs to the non-root user
-RUN chown -R repaircad_frontend_user:repaircad_frontend_user /app
+# Create a system user and give it ownership of the app
+RUN groupadd --system nodejs && \
+    useradd --system --gid nodejs --create-home --home-dir /home/nodejs nodejs && \
+    chown -R nodejs:nodejs /app
 
 # Switch to user for subsequent commands
-USER repaircad_frontend_user
+USER nodejs
 
 # Clean install production dependencies
 RUN npm ci --omit=dev

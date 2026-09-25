@@ -4,7 +4,6 @@ import { useCallback, useRef, useState } from "react";
 
 import {
   SWEEP_RENDER_STEPS,
-  DESIGN_VARIANTS,
 } from "@/lib/config";
 import { deriveLowHigh, midpoint, isCalibratable } from "@/lib/forgeParams";
 import {
@@ -16,9 +15,8 @@ import {
   renderDesignWithParams,
   patchParameters,
   getDesign,
-  getDesign3mfBytes,
+  getDesignMesh,
   parseMeshBase64,
-  parseMeshArrayBuffer,
 } from "@/lib/forgeClient";
 import { recoverDesignIdForRun } from "@/lib/recoverDesign";
 import type {
@@ -30,7 +28,7 @@ import type {
 
 /*
   Run → design persistence. A finished (or in-progress) calibration can be
-  rehydrated from the persisted Forge design — GET /designs/:id/3mf re-renders
+  rehydrated from the persisted Forge design — GET /designs/:id/mesh re-renders
   the stored model, and parameter state lives server-side in paramValues —
   so a page refresh or run re-entry never pays for a new LLM generation.
   A "choosing" entry instead stores the parallel initial variant ids, so a
@@ -45,6 +43,8 @@ interface StoredDesignState {
   designId?: string;
   phase: string;
   variantDesignIds?: string[];
+  /** Handoff document that produced the picked design. */
+  selectedHandoff?: string;
 }
 
 function readDesignStore(): Record<string, StoredDesignState> {
@@ -85,6 +85,12 @@ export function loadStoredDesignState(runId: string | null): StoredDesignState |
   if (typeof entry.designId !== "string") {
     return null;
   }
+  if (
+    entry.selectedHandoff !== undefined &&
+    typeof entry.selectedHandoff !== "string"
+  ) {
+    return null;
+  }
   // A picked design can carry the ids of the variants it was chosen from, so
   // the picker can be reopened later instead of resuming calibration.
   if (
@@ -101,9 +107,13 @@ function storeDesignState(runId: string | null, entry: StoredDesignState) {
   if (!runId) return;
   const store = readDesignStore();
   // Once a run has variant ids they persist across later entries so leaving
-  // and returning can always reopen the picker.
+  // and returning can always reopen the picker. Same for the selected
+  // handoff: later phase writes must not drop it.
   if (entry.variantDesignIds === undefined && store[runId]?.variantDesignIds) {
     entry = { ...entry, variantDesignIds: store[runId].variantDesignIds };
+  }
+  if (entry.selectedHandoff === undefined && store[runId]?.selectedHandoff) {
+    entry = { ...entry, selectedHandoff: store[runId].selectedHandoff };
   }
   store[runId] = entry;
   writeDesignStore(store);
@@ -121,7 +131,8 @@ export function clearStoredDesignState(runId: string | null) {
 
     idle → initializing → choosing → (pick) → calibrating → finalizing → ready
 
-  generate() fires DESIGN_VARIANTS independent designs in parallel and parks
+  generate() fires one independent design per supplied handoff document in
+  parallel and parks
   in "choosing" until the user picks one (or a chat-driven feedback round
   replaces the candidates). The picked design continues into a calibration
   wizard that renders a sweep of preview frames per parameter. Chat-driven
@@ -140,6 +151,9 @@ export function useForge() {
   >({});
   const [statusMessage, setStatusMessage] = useState("");
   const [designId, setDesignId] = useState<string | null>(null);
+  // The handoff document that produced the picked design — refinement
+  // receives this exact handoff, not a generic one.
+  const [selectedHandoff, setSelectedHandoff] = useState<string | null>(null);
   const [variants, setVariants] = useState<
     { designId: string; mesh: THREE_Group | null; status: "generating" | "preview" | "ready"; error: string | null }[]
   >([]);
@@ -248,9 +262,9 @@ export function useForge() {
         storeDesignState(runId, { designId: calibrationDesignId, phase: "calibrating" });
       }
 
-      const baseBytes = await getDesign3mfBytes(calibrationDesignId);
+      const baseMesh = await getDesignMesh(calibrationDesignId);
       if (signal.aborted) return;
-      if (baseBytes !== null) setMesh(parseMeshArrayBuffer(baseBytes));
+      if (baseMesh !== null) setMesh(baseMesh);
 
       setStatusMessage("Rendering parameter previews…");
 
@@ -271,7 +285,7 @@ export function useForge() {
         setStatusMessage(
           `Rendering previews for ${param.name} (${index + 1}/${pending.length})…`,
         );
-        const bytesList = await Promise.all(
+        const frames = await Promise.all(
           values.map((value) =>
             renderDesignWithParams(calibrationDesignId, { [param.name]: value }),
           ),
@@ -279,9 +293,7 @@ export function useForge() {
         if (signal.aborted) return;
         const sweep: ParamSweep = {
           values,
-          frames: bytesList.map((bytes) =>
-            bytes !== null ? parseMeshArrayBuffer(bytes) : null,
-          ),
+          frames,
         };
         setParamSweeps((prev) => ({ ...prev, [param.name]: sweep }));
       }
@@ -295,13 +307,13 @@ export function useForge() {
 
   const generate = useCallback(
     async ({
-      handoffMarkdown,
+      handoffs,
       runId,
     }: {
-      handoffMarkdown: string;
+      handoffs: string[];
       runId: string | null;
     }) => {
-      if (!handoffMarkdown?.trim()) {
+      if (handoffs.length === 0) {
         setError("No CAD handoff document was produced by the pipeline.");
         setPhase("error");
         return;
@@ -329,11 +341,12 @@ export function useForge() {
       setVariants([]);
       chooseResolverSourceRef.current = null;
       setDesignId(null);
+      setSelectedHandoff(null);
 
       try {
         /*
-          Phase 1: DESIGN_VARIANTS fully independent designs are generated
-          from the same handoff at once. The picker opens on the first tile;
+          Phase 1: one fully independent design is generated per supplied
+          handoff at once. The picker opens on the first tile;
           later tiles fill in live. Picking resolves the park immediately.
         */
         const startedVariantIds: string[] = [];
@@ -369,7 +382,7 @@ export function useForge() {
         };
 
         const checkAllSettled = () => {
-          if (pickResolved || settledCount < DESIGN_VARIANTS) return;
+          if (pickResolved || settledCount < handoffs.length) return;
           if (okCount === 0) {
             // Every variant failed: no candidate can ever be picked, so
             // reject the park instead of leaving it waiting on the user.
@@ -382,8 +395,11 @@ export function useForge() {
 
         // Latest mesh per variant id, so a mid-stream pick can reuse the tile.
         const variantMeshes = new Map<string, THREE_Group>();
+        // Which handoff produced which variant, so the picked design keeps
+        // its own handoff for refinement instead of a generic one.
+        const variantHandoffs = new Map<string, string>();
 
-        const generateVariant = async () => {
+        const generateVariant = async (handoffMarkdown: string) => {
           const child = new AbortController();
           signal.addEventListener("abort", () => child.abort(), { once: true });
           childControllers.push(child);
@@ -392,6 +408,7 @@ export function useForge() {
           try {
             variantId = await createDesign();
             noteVariant(variantId);
+            variantHandoffs.set(variantId, handoffMarkdown);
             activeVariantIdsRef.current.add(variantId);
             setVariants((prev) => [
               ...prev,
@@ -422,18 +439,18 @@ export function useForge() {
               }
             }
 
-            const bytes = await getDesign3mfBytes(variantId);
-            if (bytes !== null) {
-              variantMesh = parseMeshArrayBuffer(bytes);
-              variantMeshes.set(variantId, variantMesh);
-              patchVariant(variantId, { mesh: variantMesh, status: "ready" });
+            const finalVariantMesh = await getDesignMesh(variantId);
+            if (signal.aborted) return;
+            if (finalVariantMesh !== null) {
+              variantMeshes.set(variantId, finalVariantMesh);
+              patchVariant(variantId, { mesh: finalVariantMesh, status: "ready" });
             }
-            if (variantMesh === null) {
+            if (finalVariantMesh === null) {
               throw new Error("Forge did not return a renderable model.");
             }
             okCount++;
             activeVariantIdsRef.current.delete(variantId);
-            return { designId: variantId, mesh: variantMesh };
+            return { designId: variantId, mesh: finalVariantMesh };
           } catch (err) {
             if (variantId !== null) {
               activeVariantIdsRef.current.delete(variantId);
@@ -446,8 +463,8 @@ export function useForge() {
           }
         };
 
-        Array.from({ length: DESIGN_VARIANTS }, () =>
-          generateVariant().catch((reason) => {
+        handoffs.map((handoffMarkdown) =>
+          generateVariant(handoffMarkdown).catch((reason) => {
             console.warn("[Forge] initial variant failed:", reason);
           }),
         );
@@ -480,7 +497,10 @@ export function useForge() {
         // Phase 2: chosen design continues into calibration.
         setVariants([]);
         setDesignId(chosenId);
-        // Reuse the tile's streamed mesh if it arrived; otherwise the 3MF
+        setSelectedHandoff(
+          chosenId !== null ? (variantHandoffs.get(chosenId) ?? null) : null,
+        );
+        // Reuse the tile's streamed mesh if it arrived; otherwise the mesh
         // fetch in the calibration phase provides the first render.
         setMesh(variantMeshes.get(chosenId ?? "") ?? null);
         if (runId && chosenId) {
@@ -490,6 +510,7 @@ export function useForge() {
             designId: chosenId,
             phase: "calibrating",
             variantDesignIds: [...startedVariantIds],
+            selectedHandoff: variantHandoffs.get(chosenId),
           });
         }
         if (chosenId === null) return;
@@ -557,8 +578,8 @@ export function useForge() {
         if (Object.keys(values).length > 0) {
           await patchParameters(currentDesignId, values);
         }
-        const bytes = await getDesign3mfBytes(currentDesignId);
-        if (bytes !== null) setMesh(parseMeshArrayBuffer(bytes));
+        const updatedMesh = await getDesignMesh(currentDesignId);
+        if (updatedMesh !== null) setMesh(updatedMesh);
         setPhase("ready");
         if (runId) {
           storeDesignState(runId, { designId: currentDesignId, phase: "ready" });
@@ -621,9 +642,9 @@ export function useForge() {
       await Promise.allSettled(
         variantDesignIds.map(async (variantDesignId) => {
           try {
-            let bytes = await getDesign3mfBytes(variantDesignId);
+            let variantMesh = await getDesignMesh(variantDesignId);
 
-            if (bytes === null && !signal.aborted) {
+            if (variantMesh === null && !signal.aborted) {
               // Nothing stored yet — the generation turn may still be live.
               // Reattach the stream and wait for it to finish, then try the
               // stored render again.
@@ -644,13 +665,13 @@ export function useForge() {
                   }
                 }
               }
-              bytes = signal.aborted ? null : await getDesign3mfBytes(variantDesignId);
+              variantMesh = signal.aborted ? null : await getDesignMesh(variantDesignId);
             }
 
             if (signal.aborted) return;
-            if (bytes !== null) {
+            if (variantMesh !== null) {
               patchVariant(variantDesignId, {
-                mesh: parseMeshArrayBuffer(bytes),
+                mesh: variantMesh,
                 status: "ready",
               });
             } else {
@@ -677,22 +698,27 @@ export function useForge() {
   const rehydrate = useCallback(
     async ({
       runId,
-      handoffMarkdown,
+      handoffs,
     }: {
       runId: string | null;
-      handoffMarkdown: string;
+      handoffs: string[];
     }): Promise<boolean> => {
       let stored = loadStoredDesignState(runId);
 
       // Nothing in localStorage (cleared, new browser) — try to rebuild the
       // run → design mapping from the refinement run's persisted bootstrap
       // message.
-      if (stored === null && handoffMarkdown?.trim()) {
+      const recoveryHandoff = handoffs[0] ?? "";
+      if (stored === null && recoveryHandoff) {
         const recoveredId = await recoverDesignIdForRun({
-          handoffMarkdown,
+          handoffMarkdown: recoveryHandoff,
         });
         if (recoveredId) {
-          stored = { designId: recoveredId, phase: "ready" };
+          stored = {
+            designId: recoveredId,
+            phase: "ready",
+            selectedHandoff: recoveryHandoff,
+          };
           storeDesignState(runId, stored);
         }
       }
@@ -757,6 +783,9 @@ export function useForge() {
             designId: targetDesignId ?? undefined,
             phase: "calibrating",
             variantDesignIds: survivingIds,
+            // The pick cannot tell us which handoff produced the design here,
+            // so the recovery needle stays the first handoff.
+            selectedHandoff: stored.selectedHandoff ?? (recoveryHandoff || undefined),
           });
         }
 
@@ -772,6 +801,7 @@ export function useForge() {
           return false;
         }
         setDesignId(targetDesignId);
+        setSelectedHandoff(stored.selectedHandoff ?? (recoveryHandoff || null));
 
         if (stored.phase === "calibrating") {
           const stream = subscribeDesignStream(targetDesignId, signal);
@@ -790,13 +820,13 @@ export function useForge() {
         const calibratable = rawParams.filter(isCalibratable);
 
         if (calibratable.length === 0) {
-          const bytes = await getDesign3mfBytes(targetDesignId);
+          const readyMesh = await getDesignMesh(targetDesignId);
           if (signal.aborted) return false;
-          if (bytes === null) {
+          if (readyMesh === null) {
             clearStoredDesignState(runId);
             return false;
           }
-          setMesh(parseMeshArrayBuffer(bytes));
+          setMesh(readyMesh);
           setStatusMessage("");
           setPhase("ready");
           return true;
@@ -901,12 +931,12 @@ export function useForge() {
           throw new Error("Forge could not return the updated design.");
         }
 
-        // Fetch the final 3MF even if an intermediate mesh arrived through
-        // SSE — it represents Forge's latest stored design.
-        const updatedBytes = await getDesign3mfBytes(designId);
+        // Fetch the final stored mesh even if an intermediate mesh arrived
+        // through SSE — it represents Forge's latest stored design.
+        const updatedFromServer = await getDesignMesh(designId);
         if (signal.aborted) return false;
-        if (updatedBytes !== null) {
-          updatedMesh = parseMeshArrayBuffer(updatedBytes);
+        if (updatedFromServer !== null) {
+          updatedMesh = updatedFromServer;
         }
         if (updatedMesh !== null) {
           setMesh(updatedMesh);
@@ -951,8 +981,9 @@ export function useForge() {
   );
 
   /*
-    Feedback iteration round: the chosen design is duplicated
-    DESIGN_VARIANTS - 1 times, the feedback message is sent to every copy
+    Feedback iteration round: the chosen design is duplicated N - 1 times
+    (N = the number of handoff documents the pipeline supplied, matching the
+    initial variant count), the feedback message is sent to every copy
     plus the original, and the SAME picker view fills in exactly as during
     the initial generation. The round parks on the user's pick with the lock
     released, so the next chat instruction starts round N+1 — indefinitely.
@@ -962,10 +993,12 @@ export function useForge() {
       feedback,
       sourceDesignId,
       runId,
+      variantCount,
     }: {
       feedback: string;
       sourceDesignId: string | null;
       runId: string | null;
+      variantCount?: number;
     }) => {
       const source = sourceDesignId ?? chooseResolverSourceRef.current ?? designId;
       if (source === null) {
@@ -1107,9 +1140,9 @@ export function useForge() {
               }
             }
 
-            const bytes = await getDesign3mfBytes(runningId);
-            if (bytes !== null) {
-              candidateMesh = parseMeshArrayBuffer(bytes);
+            const finalMesh = await getDesignMesh(runningId);
+            if (finalMesh !== null) {
+              candidateMesh = finalMesh;
               patchVariant(runningId, { mesh: candidateMesh, status: "ready" });
             }
             if (candidateMesh === null) {
@@ -1135,8 +1168,9 @@ export function useForge() {
         // Fire all candidates at once. The lock is released while parked so
         // the next chat instruction can start round N+1 from here.
         runCandidate(source, true);
-        Array.from({ length: Math.max(DESIGN_VARIANTS - 1, 0) }, () =>
-          runCandidate(source, false),
+        Array.from(
+          { length: Math.max((variantCount ?? 1) - 1, 0) },
+          () => runCandidate(source, false),
         );
 
         releaseBusy(lock);
@@ -1165,9 +1199,9 @@ export function useForge() {
         setVariants([]);
         setDesignId(chosenId);
         if (chosenId === null) return;
-        const chosenBytes = await getDesign3mfBytes(chosenId);
+        const chosenMesh = await getDesignMesh(chosenId);
         if (signal.aborted) return;
-        if (chosenBytes !== null) setMesh(parseMeshArrayBuffer(chosenBytes));
+        if (chosenMesh !== null) setMesh(chosenMesh);
         if (runId) {
           storeDesignState(runId, {
             designId: chosenId,
@@ -1224,6 +1258,7 @@ export function useForge() {
     setBusy(false);
     setVariants([]);
     setDesignId(null);
+    setSelectedHandoff(null);
     setPhase("idle");
     setMesh(null);
     setError("");
@@ -1241,6 +1276,7 @@ export function useForge() {
     parameters,
     statusMessage,
     designId,
+    selectedHandoff,
     variants,
     busy,
     paramSweeps,

@@ -19,16 +19,16 @@ export function useDesignExists({
   rehydrate,
   reset,
   runId,
-  handoffMarkdown,
+  handoffs,
 }: {
   phase: ForgePhase;
   rehydrate: (args: {
     runId: string | null;
-    handoffMarkdown: string;
+    handoffs: string[];
   }) => Promise<boolean>;
   reset: () => void;
   runId: string | null;
-  handoffMarkdown: string;
+  handoffs: string[];
 }) {
   const [state, setState] = useState<"checking" | "exists" | "missing">(
     "checking",
@@ -43,7 +43,7 @@ export function useDesignExists({
       runs once; a real unmount also cancels the timer and resets.
     */
     const timer = setTimeout(() => {
-      rehydrate({ runId, handoffMarkdown }).then((restored) => {
+      rehydrate({ runId, handoffs }).then((restored) => {
         if (cancelled) return;
         if (restored) {
           setState("exists");

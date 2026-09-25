@@ -19,12 +19,13 @@ import type { DesignVariant, THREE_Group } from "@/lib/types";
 
 /*
   Shared three.js viewport building blocks for the CAD screen: model display
-  (3MF is Z-up), the sweep flipbook player, per-design camera fitting, the
-  main canvas, and the synchronized multi-tile design picker.
+  (Forge meshes are Z-up), the sweep flipbook player, per-design camera
+  fitting, the main canvas, and the synchronized multi-tile design picker.
 */
 
 export function Model({ mesh }: { mesh: THREE_Group }) {
-  // 3MF is Z-up; nod up so the model stands upright without manual rotation.
+  // Forge renders Z-up; nod up so the model stands upright without manual
+  // rotation.
   return (
     <group rotation={[-Math.PI / 2, 0, 0]}>
       <primitive object={mesh} />
@@ -107,7 +108,7 @@ function ForgeStudio({
   /*
     Refit the shadow camera to the mesh bounds on each load so small and
     large models both get crisp contact shadows, and enable casting on the
-    3MF meshes (loaders leave it off by default).
+    mesh parts (decoding leaves shadows off by default).
   */
   useEffect(() => {
     const light = keyRef.current;
@@ -293,7 +294,9 @@ export function SweepPlayer({
 }
 
 /*
-  Display-space bounds of a parsed 3MF mesh, with the Z-up correction applied.
+  Display-space bounds of a decoded Forge mesh, with the Z-up correction
+  applied. The radius sets camera fit distances; the center is where the
+  model's visual middle sits.
   The radius sets camera fit distances; the center is where the model's visual
   middle sits.
 */

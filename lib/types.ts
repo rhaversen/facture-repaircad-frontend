@@ -17,7 +17,10 @@ export interface FlowRun {
 }
 
 export interface RunningDoc {
-  provisional_cad_handoff?: string;
+  forge_handoff_1?: string;
+  forge_handoff_2?: string;
+  forge_handoff_3?: string;
+  fabrication_design_intent?: string;
   forge_instruction?: string;
   final_guidance?: string;
   [key: string]: unknown;
@@ -87,8 +90,6 @@ export interface ForgeParameter {
 }
 
 export interface ForgeOverview {
-  leaves: unknown[];
-  assemblies: unknown[];
   parameters: ForgeParameter[];
 }
 

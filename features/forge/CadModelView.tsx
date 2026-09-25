@@ -10,7 +10,7 @@ import { FlowChatFrame } from "@/features/chat/FlowChatEmbed";
 import { useRefinementRun } from "@/hooks/useRefinementRun";
 import { useForge } from "@/hooks/useForge";
 import { useDesignExists } from "@/hooks/useDesignExists";
-import { getDesign3mfBytes } from "@/lib/forgeClient";
+import { getDesignMeshBytes } from "@/lib/forgeClient";
 import { formatParamName } from "@/lib/forgeParams";
 import {
   CadCanvas,
@@ -25,7 +25,7 @@ import CalibrationPanel, {
 } from "./CalibrationPanel";
 
 interface CadModelViewProps {
-  handoffMarkdown: string;
+  handoffs: string[];
   runId: string | null;
   onBack: () => void;
   onNewRun: () => void;
@@ -42,7 +42,7 @@ interface CadModelViewProps {
   orientation throughout.
 */
 export default function CadModelView({
-  handoffMarkdown,
+  handoffs,
   runId,
   onBack,
   onNewRun,
@@ -58,6 +58,7 @@ export default function CadModelView({
     statusMessage,
     variants,
     designId,
+    selectedHandoff,
     busy,
     paramSweeps,
     confirmedValues,
@@ -81,7 +82,7 @@ export default function CadModelView({
     rehydrate,
     reset,
     runId,
-    handoffMarkdown,
+    handoffs,
   });
 
   /*
@@ -103,16 +104,17 @@ export default function CadModelView({
   } = useRefinementRun();
 
   useEffect(() => {
-    if (!handoffMarkdown?.trim()) return;
+    const bootstrapHandoff = selectedHandoff ?? handoffs[0] ?? "";
+    if (!bootstrapHandoff.trim()) return;
     const effectiveDesignId = designId ?? variants[0]?.designId ?? null;
     if (!effectiveDesignId) return;
     initializeRefinement({
-      handoffMarkdown,
+      handoffMarkdown: bootstrapHandoff,
       designId: effectiveDesignId,
     }).catch((err) => {
       console.error("Could not start refinement conversation:", err);
     });
-  }, [handoffMarkdown, designId, variants, initializeRefinement]);
+  }, [selectedHandoff, handoffs, designId, variants, initializeRefinement]);
 
   // Keep the refinement run synchronized so forge_instruction / final_guidance
   // produced by R3 becomes visible to this component.
@@ -167,6 +169,7 @@ export default function CadModelView({
         feedback: instruction,
         sourceDesignId,
         runId,
+        variantCount: handoffs.length,
       }).finally(() => {
         setIteratingFeedback(false);
       });
@@ -187,6 +190,7 @@ export default function CadModelView({
     busy,
     runId,
     pickerSelectedId,
+    handoffs.length,
     duplicateAndRefine,
     refineExistingDesign,
   ]);
@@ -225,7 +229,7 @@ export default function CadModelView({
     );
     if (!ok) return;
     reset();
-    generate({ handoffMarkdown, runId });
+    generate({ handoffs, runId });
   }
 
   const finalGuidance = refinementRunningDoc?.final_guidance?.trim() ?? "";
@@ -243,19 +247,19 @@ export default function CadModelView({
     URL.revokeObjectURL(url);
   }
 
-  async function handleDownload3mf() {
+  async function handleDownloadMesh() {
     if (designId === null) return;
     try {
-      const bytes = await getDesign3mfBytes(designId);
+      const bytes = await getDesignMeshBytes(designId);
       if (bytes === null) return;
-      const url = URL.createObjectURL(new Blob([bytes], { type: "model/3mf" }));
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
       const link = document.createElement("a");
       link.href = url;
-      link.download = `repaircad-${designId}.3mf`;
+      link.download = `repaircad-${designId}.fmsh`;
       link.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      console.error("3MF download failed:", err);
+      console.error("Mesh download failed:", err);
     }
   }
 
@@ -309,7 +313,7 @@ export default function CadModelView({
               <button
                 type="button"
                 className="mt-4.5 bg-brand px-5 py-3 font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] hover:bg-brand-dark"
-                onClick={() => generate({ handoffMarkdown, runId })}
+                onClick={() => generate({ handoffs, runId })}
               >
                 Generate model
               </button>
@@ -325,7 +329,7 @@ export default function CadModelView({
                 className="btn-secondary mt-4.5"
                 onClick={() => {
                   reset();
-                  generate({ handoffMarkdown, runId });
+                  generate({ handoffs, runId });
                 }}
               >
                 Try again
@@ -472,8 +476,8 @@ export default function CadModelView({
               {phase === "ready" && (
                 <div className="mt-6 flex shrink-0 gap-3">
                   {designId !== null && (
-                    <button type="button" className="btn-secondary" onClick={handleDownload3mf}>
-                      Download 3MF
+                    <button type="button" className="btn-secondary" onClick={handleDownloadMesh}>
+                      Download mesh
                     </button>
                   )}
                   {finalGuidance && (

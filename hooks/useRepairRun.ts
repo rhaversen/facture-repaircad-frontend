@@ -11,6 +11,7 @@ import {
   type TurnResponse,
 } from "@/lib/flowApi";
 import type { FlowMessage, FlowRun, RunningDoc } from "@/lib/types";
+import { collectHandoffs } from "@/lib/handoffs";
 
 const POLL_INTERVAL_MS = 4000;
 // A turn is waited out for up to a day: long pipelines and Forge render turns
@@ -260,9 +261,7 @@ export function useRepairRun() {
           newestMessages === null || newestMessages.length === 0;
         if (newestIsEmpty) {
           const finished = pipelineRuns.find(
-            (candidate) =>
-              (candidate.runningDoc?.provisional_cad_handoff ?? "").trim() !==
-              "",
+            (candidate) => collectHandoffs(candidate.runningDoc).length > 0,
           );
           if (finished !== undefined && finished._id !== activeRunId) {
             activeRunId = finished._id;

@@ -5,6 +5,8 @@ import "./testAct";
 import { useForge, loadStoredDesignState, clearStoredDesignState } from "./useForge";
 import type { StreamEvent } from "@/lib/forgeClient";
 import * as forgeClient from "@/lib/forgeClient";
+import * as geometryBridge from "@/lib/geometryBridge";
+import { MESH_FN } from "@/lib/geometryBridge";
 
 /*
   The hook parks asynchronously; waitFor() inside act() fights React's act
@@ -40,12 +42,18 @@ vi.mock("@/lib/forgeClient", async (importOriginal) => {
     stopDesign: vi.fn(),
     sendDesignMessage: vi.fn(),
     getDesign: vi.fn(),
-    getDesignMesh: vi.fn(),
+    getDesignGeometry: vi.fn(),
     subscribeDesignStream: vi.fn(),
-    // The real parsers decode binary FMSH mesh payloads; tests hand back
+  };
+});
+
+vi.mock("@/lib/geometryBridge", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/geometryBridge")>();
+  return {
+    ...actual,
+    // The real mesher runs manifold WASM in a worker; tests hand back
     // plain stand-ins.
-    parseMeshBase64: vi.fn(() => ({}) as never),
-    parseMeshArrayBuffer: vi.fn(() => ({}) as never),
+    meshGeometryToGroup: vi.fn(() => ({}) as never),
   };
 });
 
@@ -53,8 +61,9 @@ const HANDOFFS = ["handoff-one", "handoff-two", "handoff-three"];
 const IDS = ["id-1", "id-2", "id-3"];
 
 function meshEvent(): StreamEvent {
-  // Minimal base64 payload; the hook only forwards it to parseMeshBase64.
-  return { type: "mesh", data: "" };
+  // Minimal lowered geometry document; the hook only forwards it to
+  // meshGeometryToGroup.
+  return { type: "geometry", data: { units: "mm", instances: [], framing: { size: null, center: [0, 0, 0], maxDim: 0 } } };
 }
 
 function endEvent(): StreamEvent {
@@ -87,7 +96,12 @@ function mockSuccessfulGeneration() {
     yield meshEvent();
     yield endEvent();
   });
-  vi.mocked(forgeClient.getDesignMesh).mockResolvedValue({ children: [] } as never);
+  vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
+    units: "mm",
+    instances: [],
+    framing: { size: null, center: [0, 0, 0], maxDim: 0 },
+  });
+  vi.mocked(geometryBridge.meshGeometryToGroup).mockResolvedValue({ children: [] } as never);
   // No calibratable parameters → generation goes straight to ready on pick.
   vi.mocked(forgeClient.getDesign).mockResolvedValue({
     overview: { parameters: [] },
@@ -216,8 +230,12 @@ describe("useForge variant selection", () => {
         },
       }),
     );
-    vi.mocked(forgeClient.getDesignMesh).mockResolvedValue({ children: [] } as never);
-    // parseMeshBase64 on an empty payload must not crash the round.
+    vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
+      units: "mm",
+      instances: [],
+      framing: { size: null, center: [0, 0, 0], maxDim: 0 },
+    });
+    // meshGeometryToGroup on an empty document must not crash the round.
 
     const { result } = renderHook(() => useForge());
     let restored = false;
@@ -245,7 +263,11 @@ describe("useForge variant selection", () => {
     vi.mocked(forgeClient.getDesign).mockResolvedValue({
       overview: { parameters: [] },
     });
-    vi.mocked(forgeClient.getDesignMesh).mockResolvedValue({ children: [] } as never);
+    vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
+      units: "mm",
+      instances: [],
+      framing: { size: null, center: [0, 0, 0], maxDim: 0 },
+    });
 
     const { result } = renderHook(() => useForge());
     let restored = false;
@@ -296,7 +318,12 @@ describe("useForge picker SSE handling", () => {
     vi.mocked(forgeClient.getDesign).mockResolvedValue({
       overview: { parameters: [] },
     });
-    vi.mocked(forgeClient.getDesignMesh).mockResolvedValue({ children: [] } as never);
+    vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
+      units: "mm",
+      instances: [],
+      framing: { size: null, center: [0, 0, 0], maxDim: 0 },
+    });
+    vi.mocked(geometryBridge.meshGeometryToGroup).mockResolvedValue({ children: [] } as never);
   });
 
   afterEach(() => {
@@ -336,7 +363,7 @@ describe("useForge picker SSE handling", () => {
     expect(result.current.designId).toBe("id-1");
   });
 
-  it("streams SSE mesh frames through a real ReadableStream response", async () => {
+  it("streams SSE ir frames through a real ReadableStream response", async () => {
     vi.mocked(forgeClient.subscribeDesignStream).mockImplementation(
       async function* () {
         yield meshEvent();
@@ -347,11 +374,11 @@ describe("useForge picker SSE handling", () => {
     // client's parseStreamEvent expects.
     const raw = sseStream([meshEvent(), endEvent()]);
     const text = await new Response(raw).text();
-    expect(text).toContain("event: mesh");
+    expect(text).toContain("event: geometry");
     expect(text).toContain("event: end");
   });
 
-  it("marks surviving tiles ready via the mesh fetch", async () => {
+  it("marks surviving tiles ready via the geometry fetch", async () => {
     vi.mocked(forgeClient.subscribeDesignStream).mockImplementation(
       async function* () {
         yield endEvent();
@@ -370,7 +397,7 @@ describe("useForge picker SSE handling", () => {
     await poll(
       () => result.current.phase === "ready" || result.current.phase === "error",
     );
-    expect(forgeClient.getDesignMesh).toHaveBeenCalledWith("id-1");
+    expect(forgeClient.getDesignGeometry).toHaveBeenCalledWith("id-1", { fn: MESH_FN });
     expect(result.current.phase).toBe("ready");
   });
 

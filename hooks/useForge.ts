@@ -12,12 +12,11 @@ import {
   stopDesign,
   sendDesignMessage,
   subscribeDesignStream,
-  renderDesignWithParams,
+  getDesignGeometry,
   patchParameters,
   getDesign,
-  getDesignMesh,
-  parseMeshBase64,
 } from "@/lib/forgeClient";
+import { MESH_FN, meshGeometryToGroup } from "@/lib/geometryBridge";
 import { recoverDesignIdForRun } from "@/lib/recoverDesign";
 import type {
   ForgeParameter,
@@ -56,6 +55,15 @@ function readDesignStore(): Record<string, StoredDesignState> {
   } catch {
     return {};
   }
+}
+
+/** Fetch a design's lowered geometry (stored parameter values, fn baked
+ *  by the backend) and mesh it locally in the geometry worker. Returns a
+ *  scene Group, or null when nothing is renderable. */
+async function fetchMesh(designId: string): Promise<THREE_Group | null> {
+  const geometry = await getDesignGeometry(designId, { fn: MESH_FN });
+  if (geometry === null) return null;
+  return meshGeometryToGroup(geometry);
 }
 
 function writeDesignStore(store: Record<string, StoredDesignState>) {
@@ -262,7 +270,7 @@ export function useForge() {
         storeDesignState(runId, { designId: calibrationDesignId, phase: "calibrating" });
       }
 
-      const baseMesh = await getDesignMesh(calibrationDesignId);
+      const baseMesh = await fetchMesh(calibrationDesignId);
       if (signal.aborted) return;
       if (baseMesh !== null) setMesh(baseMesh);
 
@@ -286,9 +294,15 @@ export function useForge() {
           `Rendering previews for ${param.name} (${index + 1}/${pending.length})…`,
         );
         const frames = await Promise.all(
-          values.map((value) =>
-            renderDesignWithParams(calibrationDesignId, { [param.name]: value }),
-          ),
+          values.map(async (value) => {
+            // Preview only: lowered geometry with the sweep value merged in,
+            // meshed in the client worker. Nothing is persisted server-side.
+            const geometry = await getDesignGeometry(calibrationDesignId, {
+              values: { [param.name]: value },
+              fn: MESH_FN,
+            });
+            return geometry === null ? null : meshGeometryToGroup(geometry);
+          }),
         );
         if (signal.aborted) return;
         const sweep: ParamSweep = {
@@ -424,22 +438,23 @@ export function useForge() {
             for (;;) {
               const { value: ev, done } = await variantStream.next();
               if (done || ev.type === "end") break;
-              if (ev.type === "mesh") {
+              if (ev.type === "geometry") {
                 try {
-                  variantMesh = parseMeshBase64(ev.data);
+                  variantMesh = await meshGeometryToGroup(ev.data);
+                  if (variantMesh === null) continue;
                   variantMeshes.set(variantId, variantMesh);
                   // Streaming preview: rendered grayed out until the final
-                  // render unlocks the tile.
+                  // fetch unlocks the tile.
                   patchVariant(variantId, { mesh: variantMesh, status: "preview" });
                 } catch {
-                  // skip unparseable frame
+                  // skip unmeshable frame
                 }
               } else if (ev.type === "error") {
                 throw new Error(ev.data || "Forge error during initial generation");
               }
             }
 
-            const finalVariantMesh = await getDesignMesh(variantId);
+            const finalVariantMesh = await fetchMesh(variantId);
             if (signal.aborted) return;
             if (finalVariantMesh !== null) {
               variantMeshes.set(variantId, finalVariantMesh);
@@ -578,7 +593,7 @@ export function useForge() {
         if (Object.keys(values).length > 0) {
           await patchParameters(currentDesignId, values);
         }
-        const updatedMesh = await getDesignMesh(currentDesignId);
+        const updatedMesh = await fetchMesh(currentDesignId);
         if (updatedMesh !== null) setMesh(updatedMesh);
         setPhase("ready");
         if (runId) {
@@ -642,30 +657,31 @@ export function useForge() {
       await Promise.allSettled(
         variantDesignIds.map(async (variantDesignId) => {
           try {
-            let variantMesh = await getDesignMesh(variantDesignId);
+            let variantMesh = await fetchMesh(variantDesignId);
 
             if (variantMesh === null && !signal.aborted) {
               // Nothing stored yet — the generation turn may still be live.
               // Reattach the stream and wait for it to finish, then try the
-              // stored render again.
+              // stored geometry again.
               const stream = subscribeDesignStream(variantDesignId, signal);
               for (;;) {
                 const { value: ev, done } = await stream.next();
                 if (done || ev.type === "end" || ev.type === "error") break;
                 if (ev.type === "running" && ev.data === false) break;
-                if (ev.type === "mesh") {
+                if (ev.type === "geometry") {
                   try {
-                    const restoredMesh = parseMeshBase64(ev.data);
+                    const restoredMesh = await meshGeometryToGroup(ev.data);
+                    if (restoredMesh === null) continue;
                     patchVariant(variantDesignId, {
                       mesh: restoredMesh,
                       status: "preview",
                     });
                   } catch {
-                    // skip unparseable frame
+                    // skip unmeshable frame
                   }
                 }
               }
-              variantMesh = signal.aborted ? null : await getDesignMesh(variantDesignId);
+              variantMesh = signal.aborted ? null : await fetchMesh(variantDesignId);
             }
 
             if (signal.aborted) return;
@@ -820,7 +836,7 @@ export function useForge() {
         const calibratable = rawParams.filter(isCalibratable);
 
         if (calibratable.length === 0) {
-          const readyMesh = await getDesignMesh(targetDesignId);
+          const readyMesh = await fetchMesh(targetDesignId);
           if (signal.aborted) return false;
           if (readyMesh === null) {
             clearStoredDesignState(runId);
@@ -910,11 +926,11 @@ export function useForge() {
             } else if (turnStarted) {
               break;
             }
-          } else if (ev.type === "mesh") {
+          } else if (ev.type === "geometry") {
             try {
-              updatedMesh = parseMeshBase64(ev.data);
+              updatedMesh = await meshGeometryToGroup(ev.data);
             } catch {
-              // Ignore an unparseable intermediate mesh.
+              // Ignore an unmeshable intermediate geometry frame.
             }
           } else if (ev.type === "error") {
             throw new Error(ev.data || "Forge error during refinement");
@@ -931,9 +947,10 @@ export function useForge() {
           throw new Error("Forge could not return the updated design.");
         }
 
-        // Fetch the final stored mesh even if an intermediate mesh arrived
-        // through SSE — it represents Forge's latest stored design.
-        const updatedFromServer = await getDesignMesh(designId);
+              // Fetch the final geometry even if an intermediate frame
+              // arrived through SSE — it represents Forge's latest stored
+              // design.
+        const updatedFromServer = await fetchMesh(designId);
         if (signal.aborted) return false;
         if (updatedFromServer !== null) {
           updatedMesh = updatedFromServer;
@@ -1123,15 +1140,16 @@ export function useForge() {
               if (ev.type === "running") {
                 if (ev.data === true) turnStarted = true;
                 else if (turnStarted) break;
-              } else if (ev.type === "mesh") {
+              } else if (ev.type === "geometry") {
                 try {
-                  candidateMesh = parseMeshBase64(ev.data);
+                  candidateMesh = await meshGeometryToGroup(ev.data);
+                  if (candidateMesh === null) continue;
                   patchVariant(runningId, {
                     mesh: candidateMesh,
                     status: "preview",
                   });
                 } catch {
-                  // skip unparseable frame
+                  // skip unmeshable frame
                 }
               } else if (ev.type === "error") {
                 throw new Error(
@@ -1140,7 +1158,7 @@ export function useForge() {
               }
             }
 
-            const finalMesh = await getDesignMesh(runningId);
+            const finalMesh = await fetchMesh(runningId);
             if (finalMesh !== null) {
               candidateMesh = finalMesh;
               patchVariant(runningId, { mesh: candidateMesh, status: "ready" });
@@ -1199,7 +1217,7 @@ export function useForge() {
         setVariants([]);
         setDesignId(chosenId);
         if (chosenId === null) return;
-        const chosenMesh = await getDesignMesh(chosenId);
+        const chosenMesh = await fetchMesh(chosenId);
         if (signal.aborted) return;
         if (chosenMesh !== null) setMesh(chosenMesh);
         if (runId) {

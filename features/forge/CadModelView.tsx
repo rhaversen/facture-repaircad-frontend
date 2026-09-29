@@ -10,8 +10,9 @@ import { FlowChatFrame } from "@/features/chat/FlowChatEmbed";
 import { useRefinementRun } from "@/hooks/useRefinementRun";
 import { useForge } from "@/hooks/useForge";
 import { useDesignExists } from "@/hooks/useDesignExists";
-import { getDesignMeshBytes } from "@/lib/forgeClient";
+import { getDesignGeometry } from "@/lib/forgeClient";
 import { formatParamName } from "@/lib/forgeParams";
+import { MESH_FN } from "@/lib/geometryBridge";
 import {
   CadCanvas,
   DesignPicker,
@@ -250,12 +251,15 @@ export default function CadModelView({
   async function handleDownloadMesh() {
     if (designId === null) return;
     try {
-      const bytes = await getDesignMeshBytes(designId);
-      if (bytes === null) return;
-      const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+      // Geometry download = the wasm-ready solid nodes the client meshes from.
+      const geometry = await getDesignGeometry(designId, { fn: MESH_FN });
+      if (geometry === null) return;
+      const url = URL.createObjectURL(
+        new Blob([JSON.stringify(geometry)], { type: "application/json" }),
+      );
       const link = document.createElement("a");
       link.href = url;
-      link.download = `repaircad-${designId}.fmsh`;
+      link.download = `repaircad-${designId}.geometry.json`;
       link.click();
       URL.revokeObjectURL(url);
     } catch (err) {

@@ -1,10 +1,9 @@
 import axios from "axios";
-import * as THREE from "three";
-import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 import { FORGE_BASE } from "@/lib/env";
 import { FORGE_MODEL, FORGE_REASONING_EFFORT } from "@/lib/config";
 import type { ForgeDesign } from "@/lib/types";
+import type { SolidDocument } from "@/lib/geometry/types";
 
 /*
   Forge shares the Facture session cookie, so RepairCAD never needs a
@@ -34,7 +33,7 @@ export async function stopDesign(designId: string): Promise<void> {
 
 /** Merge-patch the design's parameter values: each sent key sets that param's
  *  user value, null clears it, keys not sent are untouched. */
-export async function patchParameters(designId: string, values: Record<string, number>) {
+export async function patchParameters(designId: string, values: Record<string, number | null>) {
   const res = await forgeAxios.patch(`/designs/${designId}/parameters`, {
     values,
   });
@@ -60,49 +59,44 @@ export async function getDesign(designId: string): Promise<ForgeDesign | null> {
   }
 }
 
-/** Fetch a design's stored mesh render as raw FMSH bytes. Returns null on
- *  204 — the backend's explicit "nothing renderable" signal. */
-export async function getDesignMeshBytes(designId: string): Promise<ArrayBuffer | null> {
-  const res = await forgeAxios.get(`/designs/${designId}/mesh`, {
-    responseType: "arraybuffer",
-    validateStatus: (s) => s === 200 || s === 204,
-  });
-  if (res.status === 204) return null;
-  return res.data as ArrayBuffer;
-}
+export type DesignGeometry = SolidDocument;
 
-/** Fetch a design's stored mesh render and decode its binary FMSH payload
- *  into a three.Group. Returns null on 204. Decode or transport failures
- *  throw. */
-export async function getDesignMesh(designId: string): Promise<THREE.Group | null> {
-  const bytes = await getDesignMeshBytes(designId);
-  if (bytes === null) return null;
-  return parseMeshArrayBuffer(bytes);
-}
-
-/** Stateless one-off render with the given params merged over the design's
- *  stored values. Nothing is persisted server-side. Returns a decoded
- *  three.Group, or null on 204. */
-export async function renderDesignWithParams(
+/** Fetch a design's lowered geometry — wasm-ready solid nodes, no mesh.
+ *  `values` merges over the stored parameter values for just this fetch
+ *  (nothing is persisted); omitted params fall back to the user's stored
+ *  value, else the spec default. `fn` picks the baked curved-surface
+ *  resolution. Returns null on 204 — the backend's explicit "nothing
+ *  renderable yet" signal. A 422 is a bare error (the compile
+ *  diagnostics are the agent's, never the frontend's). */
+export async function getDesignGeometry(
   designId: string,
-  values: Record<string, number>,
-): Promise<THREE.Group | null> {
-  const res = await forgeAxios.post(
-    `/designs/${designId}/renders`,
-    { values },
-    {
-      responseType: "arraybuffer",
+  opts?: { values?: Record<string, number>; fn?: number },
+): Promise<DesignGeometry | null> {
+  const params = new URLSearchParams();
+  for (const [name, value] of Object.entries(opts?.values ?? {})) {
+    params.append(`values[${name}]`, String(value));
+  }
+  if (opts?.fn !== undefined) params.set("fn", String(opts.fn));
+  try {
+    const res = await forgeAxios.get(`/designs/${designId}/geometry`, {
+      params,
       validateStatus: (s) => s === 200 || s === 204,
-    },
-  );
-  if (res.status === 204) return null;
-  return parseMeshArrayBuffer(res.data as ArrayBuffer);
+    });
+    if (res.status === 204) return null;
+    return res.data as DesignGeometry;
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 422) {
+      const body = err.response.data as { error?: string };
+      throw new Error(body?.error ?? "Compile failed.");
+    }
+    throw err;
+  }
 }
 
 export type StreamEvent =
   | { type: "running"; data: boolean }
   | { type: "overview"; data: unknown }
-  | { type: "mesh"; data: string }
+  | { type: "geometry"; data: SolidDocument }
   | { type: "render-start"; data: "" }
   | { type: "render-none"; data: "" }
   | { type: "usage"; data: unknown }
@@ -174,9 +168,9 @@ function parseStreamEvent(eventType: string, data: string): StreamEvent | null {
         return { type: "render-none", data: "" };
       case "overview":
         return { type: "overview", data: JSON.parse(data) };
-      case "mesh":
-        // base64-encoded FMSH bytes — keep raw, decode on demand
-        return { type: "mesh", data };
+      case "geometry":
+        // The lowered geometry — the client meshes it in the geometry worker.
+        return { type: "geometry", data: JSON.parse(data) };
       case "usage":
         return { type: "usage", data: JSON.parse(data) };
       case "error":
@@ -189,96 +183,6 @@ function parseStreamEvent(eventType: string, data: string): StreamEvent | null {
   } catch {
     return null;
   }
-}
-
-/*
-  Mesh decoding — mirrors facture-forge-frontend. The backend renders a flat
-  triangle soup in mm, Z-up, framed as a binary FMSH buffer: 'FMSH' magic,
-  uint16 version, uint16 metadata JSON length, metadata JSON, then Float32
-  positions and Uint32 indices (all little-endian).
-*/
-
-const FMSH_MAGIC = "FMSH";
-const FMSH_VERSION = 1;
-
-const DEFAULT_MESH_COLOR = "#b0b8c4";
-
-interface MeshGroupMeta {
-  color: string;
-  partId: string;
-  shapeId: string;
-  start: number;
-  count: number;
-}
-
-interface MeshMeta {
-  units: string;
-  volume: number;
-  size: [number, number, number];
-  groups: MeshGroupMeta[];
-  count?: number;
-}
-
-/** Decode a base64-encoded SSE `mesh` frame body into a three.Group.
- *  Throws on any decode failure — a corrupt frame is a bug. */
-export function parseMeshBase64(base64String: string): THREE.Group {
-  const bin = atob(base64String);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return decodeMesh(bytes);
-}
-
-/** Decode raw FMSH mesh bytes into a three.Group. */
-export function parseMeshArrayBuffer(arrayBuffer: ArrayBuffer): THREE.Group {
-  return decodeMesh(new Uint8Array(arrayBuffer));
-}
-
-function decodeMesh(buffer: Uint8Array): THREE.Group {
-  if (buffer.byteLength < 8) throw new Error("mesh buffer truncated (no header)");
-  const magic = String.fromCharCode(buffer[0], buffer[1], buffer[2], buffer[3]);
-  if (magic !== FMSH_MAGIC) throw new Error(`bad mesh magic "${magic}"`);
-  const dv = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-  const version = dv.getUint16(4, true);
-  if (version !== FMSH_VERSION) throw new Error(`unsupported mesh format version ${version}`);
-  const metaLen = dv.getUint16(6, true);
-  const metaEnd = 8 + metaLen;
-  if (metaEnd > buffer.byteLength) throw new Error("mesh metadata truncated");
-  const meta = JSON.parse(new TextDecoder().decode(buffer.subarray(8, metaEnd))) as MeshMeta;
-  const count = meta.count ?? 0;
-  const posBytes = count * 4;
-  const idxBytes = buffer.byteLength - metaEnd - posBytes;
-  if (idxBytes < 0) throw new Error("mesh positions truncated");
-  if (idxBytes % 4 !== 0) throw new Error("mesh index byte length not a multiple of 4");
-  // buffer.buffer may be a shared pool with a nonzero byteOffset — slice
-  // out aligned copies for the typed-array views.
-  const abs = buffer.byteOffset;
-  const positions = new Float32Array(buffer.buffer.slice(abs + metaEnd, abs + metaEnd + posBytes), 0, count);
-  const indices = new Uint32Array(buffer.buffer.slice(abs + metaEnd + posBytes, abs + buffer.byteLength), 0, idxBytes / 4);
-
-  // Build one mesh per shell group exactly like forge-frontend's viewport:
-  // shared position buffer, per-group index slice, creased normals, and the
-  // part identity. The group carries the Z-up → Y-up rotation in three space.
-  const group = new THREE.Group();
-  const positionAttr = new THREE.Float32BufferAttribute(positions, 3);
-  for (const g of meta.groups) {
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", positionAttr);
-    geometry.setIndex(
-      new THREE.Uint32BufferAttribute(indices.slice(g.start * 3, (g.start + g.count) * 3), 3),
-    );
-    // Creased normals keep hard edges crisp while staying smooth on curves.
-    // Returns a non-indexed geometry with per-corner normals; use directly.
-    const creased = toCreasedNormals(geometry, THREE.MathUtils.degToRad(50));
-    geometry.dispose();
-    const color = /^#[0-9a-fA-F]{6}$/.test(g.color) ? new THREE.Color(g.color) : new THREE.Color(DEFAULT_MESH_COLOR);
-    const material = new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0 });
-    const object = new THREE.Mesh(creased, material);
-    object.castShadow = true;
-    object.receiveShadow = true;
-    object.userData.partId = g.partId;
-    group.add(object);
-  }
-  return group;
 }
 
 export { FORGE_BASE };

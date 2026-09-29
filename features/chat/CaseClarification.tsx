@@ -178,7 +178,7 @@ function ClarificationForm({
     <>
       <h1 className={compact ? "text-xl" : ""}>Repair clarification</h1>
 
-      {question && <div className="mb-6 rounded-lg bg-surface p-4 text-ink-soft">{question}</div>}
+      {question && <div className="mb-6 wrap-break-word rounded-lg bg-surface p-4 text-ink-soft">{question}</div>}
 
       <label htmlFor="clarification-response">
         Your response
@@ -230,7 +230,7 @@ function ClarificationForm({
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={photo.previewUrl} alt="" className="mb-[7px] block h-[90px] w-full rounded-md object-cover" />
-                  <span className="block text-xs break-anywhere">{photo.file.name}</span>
+                  <span className="block text-xs wrap-break-word">{photo.file.name}</span>
                 </button>
 
                 <button
@@ -314,7 +314,7 @@ function ClarificationForm({
                     key={annotation.id}
                     className="flex items-start justify-between gap-2.5 border-b border-[#eceef1] py-2.5"
                   >
-                    <div>
+                    <div className="min-w-0 wrap-break-word text-sm">
                       <strong>{annotation.label}</strong>
                     </div>
 

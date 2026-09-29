@@ -12,8 +12,10 @@ import type {
 
 const MIN_BOX_SIZE = 0.01;
 
-/* Hard cap on intake photos — more dilutes the agent's attention. */
-export const MAX_PHOTOS = 8;
+/* Hard cap on photos per message — matches POST /api/uploads's per-request
+   cap on the flow backend (the forge pattern: attachments upload as assets
+   first, then ride on the message as ids). */
+export const MAX_PHOTOS = 4;
 
 function normalizedRect(start: { x: number; y: number }, end: { x: number; y: number }): NormalizedBox {
   return {

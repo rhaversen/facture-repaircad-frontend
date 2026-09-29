@@ -6,6 +6,7 @@ import { AppHeader, AppShell, Card } from "@/components/AppShell";
 import AnnotationCanvas from "@/features/intake/AnnotationCanvas";
 import { createAnnotatedCopy } from "@/lib/annotatedImageUtils";
 import { nextAnnotationColor } from "@/lib/intakeMessageUtils";
+import { MAX_PHOTOS } from "@/hooks/useIntake";
 import type { Annotation, AnnotatedCopy, Photo } from "@/lib/types";
 
 interface CaseClarificationProps {
@@ -64,12 +65,16 @@ function ClarificationForm({
   );
 
   function handlePhotoUpload(event: React.ChangeEvent<HTMLInputElement>) {
-    const newPhotos = Array.from(event.target.files ?? []).map((file) => ({
-      id: crypto.randomUUID(),
-      file,
-      previewUrl: URL.createObjectURL(file),
-      type: "close_up" as const,
-    }));
+    const picked = Array.from(event.target.files ?? []);
+    const room = MAX_PHOTOS - photos.length;
+    const newPhotos = picked
+      .slice(0, room)
+      .map((file) => ({
+        id: crypto.randomUUID(),
+        file,
+        previewUrl: URL.createObjectURL(file),
+        type: "close_up" as const,
+      }));
     setPhotos((current) => [...current, ...newPhotos]);
     if (!activePhotoId && newPhotos.length > 0) {
       setActivePhotoId(newPhotos[0].id);

@@ -54,24 +54,37 @@ export async function fetchMessages(runId: string): Promise<FlowMessage[]> {
   return res.data.messages ?? [];
 }
 
+/** Upload images to attach to the next message; the returned asset ids ride
+ *  on the postMessage call's `imageIds`. Assets are user-level — no run is
+ *  needed to attach, and the referencing run is decided at send time (the
+ *  forge pattern). The backend normalizes (re-encodes to ≤1024px JPEG,
+ *  strips EXIF) and dedupes by hash, so previews rendered from the ORIGINAL
+ *  File may differ slightly from the stored asset.Errors surface here so
+ *  callers keep the user's draft intact. */
+export async function uploadImages(files: File[]): Promise<string[]> {
+  if (files.length === 0) return [];
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append("files", file, file.name);
+  }
+  const res = await flowApi.postForm("/uploads", formData);
+  return res.data.images ?? [];
+}
+
+/** Resume a settled run with the user's reply — text and/or pre-uploaded
+ *  image asset ids (photos are only accepted on attachPhotos nodes).
+ *  Returns 202 immediately (the fire-and-forget contract): the turn runs
+ *  detached on the server; poll /runs/:id until it settles. Plain JSON —
+ *  the heavy image payloads were already stored by /uploads. */
 export async function postMessage(
   runId: string,
   content: string,
-  photos?: File[],
+  imageIds?: string[],
 ): Promise<TurnResponse> {
-  if (photos && photos.length > 0) {
-    const formData = new FormData();
-    formData.append("content", content);
-    formData.append("model", FLOW_MODEL);
-    for (const file of photos) {
-      formData.append("photos", file, file.name);
-    }
-    const res = await flowApi.post(`/runs/${runId}/messages`, formData);
-    return res.data;
-  }
   const res = await flowApi.post(`/runs/${runId}/messages`, {
     content,
     model: FLOW_MODEL,
+    ...(imageIds && imageIds.length > 0 ? { imageIds } : {}),
   });
   return res.data;
 }

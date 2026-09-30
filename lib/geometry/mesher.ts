@@ -3,24 +3,8 @@
  *  interpreter side of the executor (mirrors the backend's
  *  src/geometry/mesher.ts). */
 
-import { Manifold as ManifoldAPI } from "manifold-3d/manifoldCAD";
-
 import { buildSolid, toMat4, type Solid } from "./solidOps";
 import type { SolidDocument } from "./types";
-
-let initialized = false;
-
-/** Must be awaited once before buildMesh (loads the WASM). */
-export async function initManifold(): Promise<void> {
-	if (initialized) return;
-	await ManifoldAPI.reserveIDs(0);
-	initialized = true;
-}
-
-/** True once initManifold has completed. */
-export function isManifoldReady(): boolean {
-	return initialized;
-}
 
 export interface MeshGroup {
 	/** The color the part declared ('' when none). */
@@ -65,9 +49,6 @@ export type MeshMode = "shells" | "union";
 /** Build the full mesh for one lowered SolidDocument. Resolution is baked
  *  into the solid nodes at lowering time — no fn arg needed here. */
 export function buildMesh(doc: SolidDocument, mode: MeshMode = "shells"): MeshResult {
-	if (!initialized) {
-		throw new Error("initManifold() must be awaited first");
-	}
 	const positions: number[] = [];
 	const indices: number[] = [];
 	const groups: MeshGroup[] = [];

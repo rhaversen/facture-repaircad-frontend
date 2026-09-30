@@ -1,61 +1,118 @@
 "use client";
 
 /** Main-thread access to the mesh worker: lowered SolidDocument in →
- *  MeshPayload out. The worker owns the manifold WASM; this module just
- *  dispatches, matches replies by seq, and handles worker restart on
- *  failure. */
+ *  MeshPayload out.
+ *
+ *  THE INVARIANT — one job per worker, always replaced, mirroring the
+ *  backend's src/rendering/meshPool.ts: the worker serves exactly ONE
+ *  build over its lifetime, and whichever way it ends — reply, failure,
+ *  error event — a fresh worker spawns IMMEDIATELY so the next job finds
+ *  one ready. The manifold-3d WASM linear memory grows per build and is
+ *  never returned to the embedder, so a reused worker ratchets toward
+ *  "memory access out of bounds"; killing it after every job deletes
+ *  that failure class by construction.
+ *
+ *  ONE request is ever posted to a worker, so there is no reply id and
+ *  no kind discriminator — the outcome reads off `mesh === null`.
+ *  Concurrent callers serialize behind a promise chain; a stale reply
+ *  (from a worker replaced mid-flight) is dropped by the target check. */
 
 import type { MeshGroup, MeshPayload } from "./mesher";
 import type { SolidDocument } from "./types";
 
 import type { MeshReply, MeshRequestIn } from "./meshWorker";
 
-let worker: Worker | null = null;
-let nextSeq = 1;
-/** seq → resolve; each job holds its own promise. Stale replies (a
- *  superseded request) resolve too but are dropped by the caller's
- *  seq check. */
-const pending = new Map<number, { resolve: (r: MeshReply) => void; reject: (e: Error) => void }>();
+/** Persistently failing spawns (bad worker URL, WASM load failure) must
+ *  not respawn at full speed forever — a debounce between death-spawns,
+ *  and after repeated deaths the lane fails jobs fast instead of
+ *  spinning a doomed respawn loop. */
+const SPAWN_FAILURE_LIMIT = 8;
+const SPAWN_GUARD_MS = 25;
 
-function ensureWorker(): Worker {
-	if (worker !== null) return worker;
+let worker: Worker | null = null;
+let spawnFailures = 0;
+let broken = false;
+let spawnGuard: ReturnType<typeof setTimeout> | null = null;
+/** Serializes concurrent callers — the tail every new job awaits. */
+let laneTail: Promise<unknown> = Promise.resolve();
+/** The settled job slot — non-null from postMessage until the worker's
+ *  one reply (or its death) delivers here. */
+let pending: { resolve: (r: MeshReply) => void; reject: (e: Error) => void } | null = null;
+
+function spawn(): void {
+	if (broken || worker !== null || spawnGuard !== null) return;
 	worker = new Worker(new URL("./meshWorker.ts", import.meta.url), { type: "module" });
 	worker.addEventListener("message", (ev: MessageEvent<MeshReply>) => {
-		const job = pending.get(ev.data.seq);
-		if (job === undefined) return;
-		pending.delete(ev.data.seq);
-		if (ev.data.kind === "failed") job.reject(new Error(ev.data.error));
+		// A replaced worker's late events must not touch the lane.
+		if (worker !== ev.target) return;
+		replaceWorker(false);
+		const job = pending;
+		pending = null;
+		if (job === null) return;
+		if (ev.data.mesh === null) job.reject(new Error(ev.data.meshError));
 		else job.resolve(ev.data);
 	});
 	worker.addEventListener("error", (ev) => {
-		const err = new Error(ev.message || "mesh worker crashed");
-		// Every in-flight job rejects; the pool restarts on the next call.
-		for (const job of pending.values()) job.reject(err);
-		pending.clear();
-		worker = null;
+		if (worker !== ev.target) return;
+		replaceWorker(true);
+		const job = pending;
+		pending = null;
+		job?.reject(new Error(ev.message || "mesh worker crashed"));
 	});
-	return worker;
+}
+
+/** The replacement policy, applied after EVERY way a stint ends —
+ *  reply or failure: the WASM heap is ratcheted once the worker has run
+ *  one build, so it is never reused. `failed` counts error events
+ *  toward the broken flag. */
+function replaceWorker(failed: boolean): void {
+	worker?.terminate();
+	worker = null;
+	if (!failed) {
+		spawn();
+		return;
+	}
+	spawnFailures++;
+	if (spawnFailures > SPAWN_FAILURE_LIMIT) {
+		broken = true;
+		return;
+	}
+	spawnGuard = setTimeout(() => {
+		spawnGuard = null;
+		spawn();
+	}, SPAWN_GUARD_MS);
 }
 
 /** Build one mesh from a lowered geometry document. Resolves null for an
- *  empty document (no instances). Throws on worker/geometry failure. */
+ *  empty document (no instances). Rejects on geometry failure (the
+ *  worker's curated meshError) and on worker death. */
 export async function meshFromGeometry(geometry: SolidDocument): Promise<MeshPayload | null> {
+	if (broken) throw new Error("mesh worker unavailable");
+	const run = laneTail.then(() => buildOnLane(geometry));
+	// A rejected job must not poison the lane — later jobs still run.
+	laneTail = run.catch(() => undefined);
+	return run;
+}
+
+async function buildOnLane(geometry: SolidDocument): Promise<MeshPayload | null> {
 	if (geometry.instances.length === 0) return null;
-	const w = ensureWorker();
-	const seq = nextSeq++;
 	const reply = await new Promise<MeshReply>((resolve, reject) => {
-		pending.set(seq, { resolve, reject });
-		w.postMessage({ kind: "mesh", seq, geometry, mode: "shells" } satisfies MeshRequestIn);
+		pending = { resolve, reject };
+		spawn();
+		// Posting before the worker module finishes evaluating is fine —
+		// the job queues in the port (no init handshake needed).
+		worker?.postMessage({ geometry } satisfies MeshRequestIn);
 	});
-	if (reply.kind !== "mesh") throw new Error("unexpected worker reply");
-	const positions = reply.positions;
-	const indices = reply.indices;
+	const mesh = reply.mesh;
+	if (mesh === null) throw new Error("no mesh returned");
+	const positions = mesh.positions;
+	const indices = mesh.indices;
 	const size: [number, number, number] = [
-		reply.max[0] - reply.min[0],
-		reply.max[1] - reply.min[1],
-		reply.max[2] - reply.min[2],
+		mesh.max[0] - mesh.min[0],
+		mesh.max[1] - mesh.min[1],
+		mesh.max[2] - mesh.min[2],
 	];
-	const groups: MeshGroup[] = reply.groups
+	const groups: MeshGroup[] = mesh.groups
 		.filter((g) => g.count > 0)
 		.map((g) => ({ color: g.color, partId: g.partId, shapeId: g.shapeId, start: g.start, count: g.count }))
 		.sort((a, b) => a.start - b.start);
@@ -64,7 +121,7 @@ export async function meshFromGeometry(geometry: SolidDocument): Promise<MeshPay
 		indices,
 		size,
 		units: geometry.units,
-		volume: reply.volume,
+		volume: mesh.volume,
 		groups,
 	};
 }

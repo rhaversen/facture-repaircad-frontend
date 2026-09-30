@@ -64,19 +64,23 @@ export type DesignGeometry = SolidDocument;
 /** Fetch a design's lowered geometry — wasm-ready solid nodes, no mesh.
  *  `values` merges over the stored parameter values for just this fetch
  *  (nothing is persisted); omitted params fall back to the user's stored
- *  value, else the spec default. `fn` picks the baked curved-surface
- *  resolution. Returns null on 204 — the backend's explicit "nothing
+ *  value, else the spec default. `quality` picks the render tier the
+ *  backend lowers to (per-feature sagitta resolution baked into the
+ *  solid nodes). Returns null on 204 — the backend's explicit "nothing
  *  renderable yet" signal. A 422 is a bare error (the compile
  *  diagnostics are the agent's, never the frontend's). */
 export async function getDesignGeometry(
   designId: string,
-  opts?: { values?: Record<string, number>; fn?: number },
+  opts?: {
+    values?: Record<string, number>;
+    quality?: "draft" | "standard" | "fine";
+  },
 ): Promise<DesignGeometry | null> {
   const params = new URLSearchParams();
   for (const [name, value] of Object.entries(opts?.values ?? {})) {
     params.append(`values[${name}]`, String(value));
   }
-  if (opts?.fn !== undefined) params.set("fn", String(opts.fn));
+  params.set("quality", opts?.quality ?? "draft");
   try {
     const res = await forgeAxios.get(`/designs/${designId}/geometry`, {
       params,

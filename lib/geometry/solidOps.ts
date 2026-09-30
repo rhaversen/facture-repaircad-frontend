@@ -28,6 +28,8 @@ export function buildSolid(node: SolidNode): Solid {
 			return ManifoldAPI.extrude(CrossSection.ofPolygons([toVec2(node.poly)]), node.h);
 		case "revolve":
 			return ManifoldAPI.revolve(node.poly.map((p) => [p[0], p[1]] as [number, number]), node.segments);
+		case "cylinder":
+			return ManifoldAPI.cylinder(node.h, node.r1, node.r2, node.segments);
 		case "sphere":
 			return ManifoldAPI.sphere(node.r, node.segments);
 		case "hull": {

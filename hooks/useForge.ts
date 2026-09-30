@@ -16,7 +16,7 @@ import {
   patchParameters,
   getDesign,
 } from "@/lib/forgeClient";
-import { MESH_FN, meshGeometryToGroup } from "@/lib/geometryBridge";
+import { MESH_QUALITY, meshGeometryToGroup } from "@/lib/geometryBridge";
 import { recoverDesignIdForRun } from "@/lib/recoverDesign";
 import type {
   ForgeParameter,
@@ -57,11 +57,11 @@ function readDesignStore(): Record<string, StoredDesignState> {
   }
 }
 
-/** Fetch a design's lowered geometry (stored parameter values, fn baked
- *  by the backend) and mesh it locally in the geometry worker. Returns a
- *  scene Group, or null when nothing is renderable. */
+/** Fetch a design's lowered geometry (stored parameter values, render
+ *  tier baked by the backend) and mesh it locally in the geometry worker.
+ *  Returns a scene Group, or null when nothing is renderable. */
 async function fetchMesh(designId: string): Promise<THREE_Group | null> {
-  const geometry = await getDesignGeometry(designId, { fn: MESH_FN });
+  const geometry = await getDesignGeometry(designId, { quality: MESH_QUALITY });
   if (geometry === null) return null;
   return meshGeometryToGroup(geometry);
 }
@@ -299,7 +299,7 @@ export function useForge() {
             // meshed in the client worker. Nothing is persisted server-side.
             const geometry = await getDesignGeometry(calibrationDesignId, {
               values: { [param.name]: value },
-              fn: MESH_FN,
+              quality: MESH_QUALITY,
             });
             return geometry === null ? null : meshGeometryToGroup(geometry);
           }),

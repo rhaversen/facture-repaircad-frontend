@@ -16,13 +16,15 @@ export function assertNever(value: never): never {
 export type Poly = ReadonlyArray<readonly [number, number]>;
 
 /** The wasm-ready boolean tree the codegen lowering emits (see the
- *  backend's plan.ts): profile extrusions, revolves, spheres, capsule
- *  hull-chains, and rigid rotate/translate nodes over a boolean assembly.
- *  All curved-surface resolution (`segments`) is baked per node — this
- *  union is the ONLY geometry concept the frontend interprets. */
+ *  backend's plan.ts): profile extrusions, revolves, tapered cylinders,
+ *  spheres, capsule hull-chains, and rigid rotate/translate nodes over a
+ *  boolean assembly. All curved-surface resolution (`segments`) is baked
+ *  per node — this union is the ONLY geometry concept the frontend
+ *  interprets. */
 export type SolidNode =
 	| { kind: "extrude"; poly: Poly; h: number }
 	| { kind: "revolve"; poly: Poly; segments: number }
+	| { kind: "cylinder"; r1: number; r2: number; h: number; segments: number }
 	| { kind: "sphere"; r: number; segments: number }
 	| { kind: "hull"; points: readonly Vec3[]; r: number; segments: number }
 	| { kind: "translate"; offset: Vec3; node: SolidNode }

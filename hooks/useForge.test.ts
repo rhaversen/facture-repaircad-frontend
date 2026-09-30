@@ -6,7 +6,7 @@ import { useForge, loadStoredDesignState, clearStoredDesignState } from "./useFo
 import type { StreamEvent } from "@/lib/forgeClient";
 import * as forgeClient from "@/lib/forgeClient";
 import * as geometryBridge from "@/lib/geometryBridge";
-import { MESH_FN } from "@/lib/geometryBridge";
+import { MESH_QUALITY } from "@/lib/geometryBridge";
 
 /*
   The hook parks asynchronously; waitFor() inside act() fights React's act
@@ -397,7 +397,7 @@ describe("useForge picker SSE handling", () => {
     await poll(
       () => result.current.phase === "ready" || result.current.phase === "error",
     );
-    expect(forgeClient.getDesignGeometry).toHaveBeenCalledWith("id-1", { fn: MESH_FN });
+    expect(forgeClient.getDesignGeometry).toHaveBeenCalledWith("id-1", { quality: MESH_QUALITY });
     expect(result.current.phase).toBe("ready");
   });
 

@@ -12,7 +12,7 @@ import { useForge } from "@/hooks/useForge";
 import { useDesignExists } from "@/hooks/useDesignExists";
 import { getDesignGeometry } from "@/lib/forgeClient";
 import { formatParamName } from "@/lib/forgeParams";
-import { MESH_FN } from "@/lib/geometryBridge";
+import { MESH_QUALITY } from "@/lib/geometryBridge";
 import {
   CadCanvas,
   DesignPicker,
@@ -252,7 +252,7 @@ export default function CadModelView({
     if (designId === null) return;
     try {
       // Geometry download = the wasm-ready solid nodes the client meshes from.
-      const geometry = await getDesignGeometry(designId, { fn: MESH_FN });
+      const geometry = await getDesignGeometry(designId, { quality: MESH_QUALITY });
       if (geometry === null) return;
       const url = URL.createObjectURL(
         new Blob([JSON.stringify(geometry)], { type: "application/json" }),

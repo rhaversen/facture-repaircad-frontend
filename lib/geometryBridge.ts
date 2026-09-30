@@ -11,9 +11,11 @@ import { meshFromGeometry } from "@/lib/geometry/meshClient";
 import type { MeshPayload } from "@/lib/geometry/mesher";
 import type { THREE_Group } from "@/lib/types";
 
-/** Curved-surface resolution (segments per full circle) requested from
- *  the geometry route — the backend bakes it into the solid nodes. */
-export const MESH_FN = 64;
+/** Render tier requested from the geometry route — the backend bakes
+ *  per-feature sagitta resolution into the solid nodes. */
+export type MeshQuality = "draft" | "standard" | "fine";
+
+export const MESH_QUALITY: MeshQuality = "draft";
 
 const DEFAULT_MESH_COLOR = "#b0b8c4";
 

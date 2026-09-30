@@ -66,9 +66,10 @@ export type DesignGeometry = SolidDocument;
  *  (nothing is persisted); omitted params fall back to the user's stored
  *  value, else the spec default. `quality` picks the render tier the
  *  backend lowers to (per-feature sagitta resolution baked into the
- *  solid nodes). Returns null on 204 — the backend's explicit "nothing
- *  renderable yet" signal. A 422 is a bare error (the compile
- *  diagnostics are the agent's, never the frontend's). */
+ *  solid nodes). Returns null for BOTH "nothing renderable" signals:
+ *  the backend's explicit 204, and a 422 compile failure — the compile
+ *  diagnostics are the agent's feedback channel, never user-facing,
+ *  so they resolve to "no mesh" instead of throwing. */
 export async function getDesignGeometry(
   designId: string,
   opts?: {
@@ -81,20 +82,13 @@ export async function getDesignGeometry(
     params.append(`values[${name}]`, String(value));
   }
   params.set("quality", opts?.quality ?? "draft");
-  try {
-    const res = await forgeAxios.get(`/designs/${designId}/geometry`, {
-      params,
-      validateStatus: (s) => s === 200 || s === 204,
-    });
-    if (res.status === 204) return null;
-    return res.data as DesignGeometry;
-  } catch (err) {
-    if (axios.isAxiosError(err) && err.response?.status === 422) {
-      const body = err.response.data as { error?: string };
-      throw new Error(body?.error ?? "Compile failed.");
-    }
-    throw err;
-  }
+  const res = await forgeAxios.get(`/designs/${designId}/geometry`, {
+    params,
+    // 422 = compile failure → treated as "nothing renderable" below.
+    validateStatus: (s) => s === 200 || s === 204 || s === 422,
+  });
+  if (res.status === 204 || res.status === 422) return null;
+  return res.data as DesignGeometry;
 }
 
 export type StreamEvent =

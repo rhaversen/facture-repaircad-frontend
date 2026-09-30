@@ -3,15 +3,17 @@
  *  (lowered SolidDocument) with buildMesh results. Transferables: the
  *  typed arrays move to the main thread zero-copy.
  *
- *  NO init step and NO kind discriminator, mirroring the backend's
- *  src/rendering/meshWorker.ts: the manifoldCAD entry module top-level-
- *  awaits the WASM instantiation, so importing mesher.ts at all implies
- *  the kernel is ready, and there is at most one request in flight (the
- *  client replaces this worker after every job), so port order resolves
- *  everything. Messages posted before the entry module finishes
- *  evaluating simply queue in the port. */
+ *  The entry deliberately has NO static imports and NO init handshake,
+ *  mirroring the backend's src/rendering/meshWorker.ts in spirit but
+ *  guarding against the one browser-specific hazard: the manifoldCAD
+ *  entry module top-level-awaits WASM instantiation. Static-importing it
+ *  delays worker evaluation; if that stalls (bundler dev chunk loading
+ *  inside a module worker), the port queue stays paused with no error
+ *  event and the job hangs. Instead the bare entry evaluates instantly,
+ *  and mesher is imported lazily at job time — so a boot stall surfaces
+ *  as a normal job failure, not a silent void. */
 
-import { buildMesh, type MeshMode } from "./mesher";
+import type { MeshMode } from "./mesher";
 import type { SolidDocument } from "./types";
 
 export interface MeshRequest {
@@ -33,25 +35,28 @@ const post = (msg: MeshReply, transfer?: Transferable[]): void => {
 
 self.addEventListener("message", (ev: MessageEvent<MeshRequestIn>) => {
 	const msg = ev.data;
-	try {
-		const mesh = buildMesh(msg.geometry, msg.mode ?? "shells");
-		post(
-			{
-				mesh: {
-					positions: mesh.positions,
-					indices: mesh.indices,
-					min: mesh.min,
-					max: mesh.max,
-					volume: mesh.volume,
-					groups: mesh.groups.map((g) => ({ ...g })),
+	void (async () => {
+		try {
+			const { buildMesh } = await import("./mesher");
+			const mesh = buildMesh(msg.geometry, msg.mode ?? "shells");
+			post(
+				{
+					mesh: {
+						positions: mesh.positions,
+						indices: mesh.indices,
+						min: mesh.min,
+						max: mesh.max,
+						volume: mesh.volume,
+						groups: mesh.groups.map((g) => ({ ...g })),
+					},
 				},
-			},
-			[mesh.positions.buffer, mesh.indices.buffer],
-		);
-	} catch (err) {
-		post({
-			mesh: null,
-			meshError: err instanceof Error ? err.message : String(err),
-		});
-	}
+				[mesh.positions.buffer, mesh.indices.buffer],
+			);
+		} catch (err) {
+			post({
+				mesh: null,
+				meshError: err instanceof Error ? err.message : String(err),
+			});
+		}
+	})();
 });

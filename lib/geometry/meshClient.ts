@@ -28,16 +28,26 @@ import type { MeshReply, MeshRequestIn } from "./meshWorker";
  *  spinning a doomed respawn loop. */
 const SPAWN_FAILURE_LIMIT = 8;
 const SPAWN_GUARD_MS = 25;
+/** No reply within this window counts as worker death — the backend's
+ *  meshPool watchdog uses the same window (JOB_TIMEOUT_MS). */
+const JOB_TIMEOUT_MS = 5 * 60_000;
 
 let worker: Worker | null = null;
 let spawnFailures = 0;
 let broken = false;
 let spawnGuard: ReturnType<typeof setTimeout> | null = null;
+/** Resolves when a faulted respawn's debounce has elapsed and the lane
+ *  is live again — jobs arriving during the debounce await this. */
+let boot: Promise<void> | null = null;
 /** Serializes concurrent callers — the tail every new job awaits. */
 let laneTail: Promise<unknown> = Promise.resolve();
 /** The settled job slot — non-null from postMessage until the worker's
- *  one reply (or its death) delivers here. */
-let pending: { resolve: (r: MeshReply) => void; reject: (e: Error) => void } | null = null;
+ *  one reply (or its death / timeout) delivers here. */
+let pending: {
+	resolve: (r: MeshReply) => void;
+	reject: (e: Error) => void;
+	timer: ReturnType<typeof setTimeout> | null;
+} | null = null;
 
 function spawn(): void {
 	if (broken || worker !== null || spawnGuard !== null) return;
@@ -49,6 +59,7 @@ function spawn(): void {
 		const job = pending;
 		pending = null;
 		if (job === null) return;
+		if (job.timer !== null) clearTimeout(job.timer);
 		if (ev.data.mesh === null) job.reject(new Error(ev.data.meshError));
 		else job.resolve(ev.data);
 	});
@@ -57,7 +68,10 @@ function spawn(): void {
 		replaceWorker(true);
 		const job = pending;
 		pending = null;
-		job?.reject(new Error(ev.message || "mesh worker crashed"));
+		if (job !== null) {
+			if (job.timer !== null) clearTimeout(job.timer);
+			job.reject(new Error(ev.message || "mesh worker crashed"));
+		}
 	});
 }
 
@@ -75,12 +89,16 @@ function replaceWorker(failed: boolean): void {
 	spawnFailures++;
 	if (spawnFailures > SPAWN_FAILURE_LIMIT) {
 		broken = true;
+		boot = null;
 		return;
 	}
-	spawnGuard = setTimeout(() => {
-		spawnGuard = null;
-		spawn();
-	}, SPAWN_GUARD_MS);
+	boot = new Promise<void>((resolve) => {
+		spawnGuard = setTimeout(() => {
+			spawnGuard = null;
+			spawn();
+			resolve();
+		}, SPAWN_GUARD_MS);
+	});
 }
 
 /** Build one mesh from a lowered geometry document. Resolves null for an
@@ -96,12 +114,30 @@ export async function meshFromGeometry(geometry: SolidDocument): Promise<MeshPay
 
 async function buildOnLane(geometry: SolidDocument): Promise<MeshPayload | null> {
 	if (geometry.instances.length === 0) return null;
+	// Posting to a not-yet-live lane loses the job — no reply ever comes
+	// and the lane chain hangs every later job behind it. Wait out a
+	// faulted respawn's debounce instead.
+	if (worker === null && boot !== null) await boot;
+	if (broken) throw new Error("mesh worker unavailable");
 	const reply = await new Promise<MeshReply>((resolve, reject) => {
-		pending = { resolve, reject };
+		const timer = setTimeout(() => {
+			if (pending === null || pending.timer !== timer) return;
+			replaceWorker(true);
+			const job = pending;
+			pending = null;
+			job.reject(new Error(`mesh build timed out after ${JOB_TIMEOUT_MS}ms`));
+		}, JOB_TIMEOUT_MS);
+		pending = { resolve, reject, timer };
 		spawn();
+		if (worker === null) {
+			clearTimeout(timer);
+			pending = null;
+			reject(new Error("mesh worker could not start"));
+			return;
+		}
 		// Posting before the worker module finishes evaluating is fine —
 		// the job queues in the port (no init handshake needed).
-		worker?.postMessage({ geometry } satisfies MeshRequestIn);
+		worker.postMessage({ geometry } satisfies MeshRequestIn);
 	});
 	const mesh = reply.mesh;
 	if (mesh === null) throw new Error("no mesh returned");

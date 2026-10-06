@@ -106,6 +106,24 @@ export interface DesignVariant {
   error: string | null;
 }
 
+/*
+  One feedback round. Each round duplicates the carried-forward design into
+  three copies, sends the user's feedback only to those copies, and the copy
+  the user picks is carried forward into the next round. The variants a round
+  produced stay referenced so the timeline can list every iteration.
+*/
+export interface ForgeIteration {
+  round: number;
+  /** User feedback for this round; null for the initial generation. */
+  feedback: string | null;
+  /** Carried-forward design this round duplicated. */
+  sourceDesignId: string;
+  /** Designs this round produced (the 3 copies). */
+  variantIds: string[];
+  /** Design picked out of this round — carried to the next round. */
+  pickedDesignId?: string;
+}
+
 // Kept as a type alias so hooks do not need to import three at module scope.
 export type THREE_Group = import("three").Group;
 

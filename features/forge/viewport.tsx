@@ -15,7 +15,7 @@ import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment
 import * as THREE from "three";
 
 import { SWEEP_FPS } from "@/lib/config";
-import type { DesignVariant, THREE_Group } from "@/lib/types";
+import type { DesignVariant, ForgeIteration, THREE_Group } from "@/lib/types";
 
 /*
   Shared three.js viewport building blocks for the CAD screen: model display
@@ -508,13 +508,16 @@ function PickerModel({
 
 export function DesignPicker({
   variants,
+  iterations = [],
   onSelect,
 }: {
   variants: DesignVariant[];
+  iterations?: ForgeIteration[];
   onSelect?: (designId: string) => void;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [page, setPage] = useState(0);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const pageCount = Math.max(1, Math.ceil(variants.length / PICKER_PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
@@ -539,8 +542,15 @@ export function DesignPicker({
     [variants],
   );
 
-  // One shared fit: the largest variant radius, so every model sits at the
-  // same distance in the same synchronized camera.
+  /* Hide the in-progress round: its entry only exists once the user picks,
+     so the newest completed iteration is always a settled past round. */
+  const previousIterations = useMemo(
+    () =>
+      iterations.filter(
+        (iteration) => !variants.some((v) => v.designId === iteration.pickedDesignId),
+      ),
+    [iterations, variants],
+  );
   const fitRadius = useMemo(() => {
     let radius = 0;
     for (const bounds of variantBounds) {
@@ -603,6 +613,13 @@ export function DesignPicker({
 
   return (
     <div className="flex flex-col gap-4">
+      {previousIterations.length > 0 && (
+        <IterationTimeline
+          iterations={previousIterations}
+          open={historyOpen}
+          onToggle={() => setHistoryOpen((prev) => !prev)}
+        />
+      )}
       <div className="grid grid-cols-[repeat(2,minmax(0,1fr))] gap-4 max-[900px]:grid-cols-1">
         {variants.map((variant, index) => {
           const visible = visibleIds.has(variant.designId);
@@ -715,6 +732,81 @@ export function DesignPicker({
             Next →
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+/* Timeline of completed feedback rounds. Each entry shows the round number,
+   the feedback that shaped it, the carried-forward source, and which copy was
+   picked out of the round's candidates. */
+function IterationTimeline({
+  iterations,
+  open,
+  onToggle,
+}: {
+  iterations: ForgeIteration[];
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="rounded-xl border border-line-soft bg-surface">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-3 px-5 py-3 text-left"
+        onClick={onToggle}
+      >
+        <span className="text-[15px] font-semibold text-ink">
+          Iteration history ({iterations.length}{" "}
+          {iterations.length === 1 ? "round" : "rounds"})
+        </span>
+        <span className="text-sm text-muted">{open ? "Hide ▲" : "Show ▼"}</span>
+      </button>
+      {open && (
+        <ol className="flex flex-col gap-3 border-t border-line-soft px-5 py-4">
+          {iterations.map((iteration) => {
+            const roundNumber = iteration.round;
+            const variantIndex =
+              iteration.variantIds.indexOf(iteration.pickedDesignId ?? "");
+            return (
+              <li
+                key={iteration.round}
+                className="flex flex-col gap-1.5 rounded-lg border border-line-soft bg-white px-4 py-3"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-brand/10 px-2.5 py-0.5 text-[12px] font-semibold text-brand">
+                    Round {roundNumber}
+                  </span>
+                  {iteration.feedback === null ? (
+                    <span className="text-[12px] text-muted">
+                      Initial generation
+                    </span>
+                  ) : (
+                    <span className="text-[13px] text-ink">
+                      “{iteration.feedback}”
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted">
+                  <span>
+                    Carried forward: design {iteration.sourceDesignId.slice(0, 8)}
+                  </span>
+                  <span>
+                    Candidates: {iteration.variantIds.length}{" "}
+                    {iteration.variantIds.length === 1 ? "copy" : "copies"}
+                  </span>
+                  {iteration.pickedDesignId !== undefined && (
+                    <span>
+                      Picked: design {iteration.pickedDesignId.slice(0, 8)}
+                      {variantIndex >= 0 ? ` (#${variantIndex + 1})` : ""}
+                      <span className="ml-1 text-brand">✓</span>
+                    </span>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
       )}
     </div>
   );

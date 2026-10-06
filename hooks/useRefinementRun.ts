@@ -4,7 +4,7 @@ import { useCallback, useRef, useState } from "react";
 
 import {
   createRefinementRun,
-  fetchRuns,
+  fetchRun,
   postMessage,
 } from "@/lib/flowApi";
 import type { FlowRun, RunningDoc } from "@/lib/types";
@@ -63,9 +63,9 @@ export function useRefinementRun() {
           }
 
           const bootstrapMessage = [
-            "REPAIRCAD CAD REFINEMENT CONTEXT",
+            "CAD REFINEMENT CONTEXT",
             "",
-            "You are continuing an existing RepairCAD repair after provisional CAD generation.",
+            "You are continuing an existing repair after provisional CAD generation.",
             "Use the repair requirements below as the authoritative current handoff.",
             "Work with the existing Forge design rather than creating a replacement design unless explicitly required.",
             "",
@@ -115,9 +115,11 @@ export function useRefinementRun() {
         return null;
       }
       try {
-        const runs = await fetchRuns();
-        const latestRun = runs.find((candidate) => candidate._id === runIdRef.current);
-        if (!latestRun) return null;
+        // Fetch this run directly: fetchRuns() filters out runs from any
+        // pipeline other than the RepairCAD intake pipeline, so the
+        // AfterForge refinement run (and its forge_instruction) would be
+        // invisible there.
+        const latestRun = await fetchRun(runIdRef.current);
         setRun(latestRun);
         setRunningDoc(latestRun.runningDoc ?? {});
         return latestRun;

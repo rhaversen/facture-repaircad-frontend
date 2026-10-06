@@ -9,6 +9,7 @@ import {
   fetchRuns,
   postMessage,
   type TurnResponse,
+  uploadImages,
 } from "@/lib/flowApi";
 import type { FlowMessage, FlowRun, RunningDoc } from "@/lib/types";
 import { collectHandoffs } from "@/lib/handoffs";
@@ -179,12 +180,16 @@ export function useRepairRun() {
         .map((photo) => annotatedCopies[photo.id]?.file ?? photo.file)
         .filter((file): file is File => file !== undefined);
 
-      const response = await postMessage(activeRunId, intakeMessage, files);
+      // Upload first, then reference the returned asset ids on the message
+      // call (the forge pattern). Upload failures reject here so the user's
+      // intake draft stays intact for a retry.
+      const imageIds = await uploadImages(files);
+      const response = await postMessage(activeRunId, intakeMessage, imageIds);
       return await applyTurnResponse(response, activeRunId);
     } catch (error) {
-      console.error("RepairCAD intake submission failed:", error);
+      console.error("Intake submission failed:", error);
       setSubmissionError(
-        "RepairCAD could not process the intake. Please try again.",
+        "The intake could not be processed. Please try again.",
       );
       throw error;
     } finally {
@@ -206,10 +211,11 @@ export function useRepairRun() {
         .map((photo) => annotatedCopies?.[photo.id]?.file ?? photo.file)
         .filter((file): file is File => file !== undefined);
 
-      const response = await postMessage(activeRunId, message, files);
+      const imageIds = await uploadImages(files);
+      const response = await postMessage(activeRunId, message, imageIds);
       return await applyTurnResponse(response, activeRunId);
     } catch (error) {
-      console.error("RepairCAD clarification submission failed:", error);
+      console.error("Clarification submission failed:", error);
       await reconcileRun();
       throw error;
     }

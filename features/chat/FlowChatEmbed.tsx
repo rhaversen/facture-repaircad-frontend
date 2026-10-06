@@ -11,7 +11,7 @@ import { FLOW_MODEL } from "@/lib/config";
 */
 export function FlowChatFrame({
   runId,
-  title = "RepairCAD conversation",
+  title = "CAD conversation",
   disabled = false,
   disabledMessage,
 }: {
@@ -46,6 +46,57 @@ export function FlowChatFrame({
   );
 }
 
+/*
+  The shared header actions for the conversation screens. FlowChatEmbed renders
+  them above its transcript iframe; the clarification card reuses the same row
+  so its focused single-card layout keeps the run controls available.
+*/
+export function FlowChatActions({
+  onLogout,
+  onNewRun,
+  onViewRuns,
+  onOpenCad,
+  cadReady = false,
+}: {
+  onLogout: () => void;
+  onNewRun: () => void;
+  onViewRuns: () => void;
+  onOpenCad?: () => void;
+  cadReady?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      {onOpenCad && (
+        <button
+          type="button"
+          className="btn-utility"
+          onClick={onOpenCad}
+          disabled={!cadReady}
+          title={
+            cadReady
+              ? "Open the CAD & refinement workspace"
+              : "Available once a CAD handoff has been produced"
+          }
+        >
+          CAD workspace →
+        </button>
+      )}
+      <button type="button" className="btn-utility" onClick={onNewRun}>
+        New run
+      </button>
+      <button type="button" className="btn-utility" onClick={onViewRuns}>
+        All runs
+      </button>
+      <a className="btn-utility" href={AUTH_BASE} target="_blank" rel="noreferrer">
+        Account
+      </a>
+      <button type="button" className="btn-ghost" onClick={onLogout}>
+        Sign out
+      </button>
+    </div>
+  );
+}
+
 export default function FlowChatEmbed({
   runId,
   onLogout,
@@ -77,39 +128,19 @@ export default function FlowChatEmbed({
   return (
     <main className="relative mx-auto flex h-full min-h-0 w-full max-w-[900px] flex-col gap-4 rounded-2xl border border-line bg-white px-6 pb-6 pt-5">
       <div className="flex flex-wrap items-center justify-between gap-5">
-        <div className="text-lg font-bold">RepairCAD</div>
+        <div className="text-lg font-bold">CAD</div>
 
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            className="btn-utility"
-            onClick={onOpenCad}
-            disabled={!cadReady}
-            title={
-              cadReady
-                ? "Open the CAD & refinement workspace"
-                : "Available once RepairCAD has produced a CAD handoff"
-            }
-          >
-            CAD workspace →
-          </button>
-          <button type="button" className="btn-utility" onClick={onNewRun}>
-            New run
-          </button>
-          <button type="button" className="btn-utility" onClick={onViewRuns}>
-            All runs
-          </button>
-          <a className="btn-utility" href={AUTH_BASE} target="_blank" rel="noreferrer">
-            Account
-          </a>
-          <button type="button" className="btn-ghost" onClick={onLogout}>
-            Sign out
-          </button>
-        </div>
+        <FlowChatActions
+          onLogout={onLogout}
+          onNewRun={onNewRun}
+          onViewRuns={onViewRuns}
+          onOpenCad={onOpenCad}
+          cadReady={cadReady}
+        />
       </div>
 
       <iframe
-        title="RepairCAD conversation"
+        title="CAD conversation"
         src={`${FLOW_EMBED_BASE}?${params.toString()}`}
         className="min-h-0 w-full flex-1 rounded-xl border border-line bg-black"
         allow="clipboard-write"

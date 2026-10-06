@@ -73,7 +73,7 @@ export default function AnnotationCanvas({
           alt={imageAlt}
           draggable="false"
           className={`mx-auto block h-auto w-auto max-w-full pointer-events-none ${
-            compact ? "max-h-[40vh]" : "max-h-[calc(100vh_-_320px)]"
+            compact ? "max-h-[34vh]" : "max-h-[calc(100vh_-_320px)]"
           }`}
         />
 

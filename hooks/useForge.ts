@@ -12,14 +12,14 @@ import {
   stopDesign,
   sendDesignMessage,
   subscribeDesignStream,
-  renderDesignWithParams,
+  getDesignGeometry,
   patchParameters,
   getDesign,
-  getDesignMesh,
-  parseMeshBase64,
 } from "@/lib/forgeClient";
+import { MESH_QUALITY, meshGeometryToGroup } from "@/lib/geometryBridge";
 import { recoverDesignIdForRun } from "@/lib/recoverDesign";
 import type {
+  ForgeIteration,
   ForgeParameter,
   ForgePhase,
   ParamSweep,
@@ -45,6 +45,8 @@ interface StoredDesignState {
   variantDesignIds?: string[];
   /** Handoff document that produced the picked design. */
   selectedHandoff?: string;
+  /** Feedback iteration lineage, oldest first. */
+  iterations?: ForgeIteration[];
 }
 
 function readDesignStore(): Record<string, StoredDesignState> {
@@ -56,6 +58,15 @@ function readDesignStore(): Record<string, StoredDesignState> {
   } catch {
     return {};
   }
+}
+
+/** Fetch a design's lowered geometry (stored parameter values, render
+ *  tier baked by the backend) and mesh it locally in the geometry worker.
+ *  Returns a scene Group, or null when nothing is renderable. */
+async function fetchMesh(designId: string): Promise<THREE_Group | null> {
+  const geometry = await getDesignGeometry(designId, { quality: MESH_QUALITY });
+  if (geometry === null) return null;
+  return meshGeometryToGroup(geometry);
 }
 
 function writeDesignStore(store: Record<string, StoredDesignState>) {
@@ -100,6 +111,9 @@ export function loadStoredDesignState(runId: string | null): StoredDesignState |
   ) {
     return null;
   }
+  if (entry.iterations !== undefined && !Array.isArray(entry.iterations)) {
+    return null;
+  }
   return entry;
 }
 
@@ -114,6 +128,11 @@ function storeDesignState(runId: string | null, entry: StoredDesignState) {
   }
   if (entry.selectedHandoff === undefined && store[runId]?.selectedHandoff) {
     entry = { ...entry, selectedHandoff: store[runId].selectedHandoff };
+  }
+  // Iteration lineage accumulates: later phase writes keep what earlier
+  // rounds recorded. Callers adding a round pass the full updated list.
+  if (entry.iterations === undefined && store[runId]?.iterations) {
+    entry = { ...entry, iterations: store[runId].iterations };
   }
   store[runId] = entry;
   writeDesignStore(store);
@@ -154,6 +173,8 @@ export function useForge() {
   // The handoff document that produced the picked design — refinement
   // receives this exact handoff, not a generic one.
   const [selectedHandoff, setSelectedHandoff] = useState<string | null>(null);
+  // Feedback lineage, oldest first — drives the iteration timeline.
+  const [iterations, setIterations] = useState<ForgeIteration[]>([]);
   const [variants, setVariants] = useState<
     { designId: string; mesh: THREE_Group | null; status: "generating" | "preview" | "ready"; error: string | null }[]
   >([]);
@@ -162,6 +183,23 @@ export function useForge() {
   // Mirror of confirmedValues for async code that must not re-run on every
   // confirmation (finishCalibration batches the final patch).
   const confirmedValuesRef = useRef<Record<string, number>>({});
+  // Mirror of iterations so feedback rounds can append lineage without
+  // depending on state (avoids stale closures).
+  const iterationsRef = useRef<ForgeIteration[]>([]);
+  const setIterationsTracked = useCallback(
+    (
+      updater:
+        | ForgeIteration[]
+        | ((prev: ForgeIteration[]) => ForgeIteration[]),
+    ) => {
+      setIterations((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        iterationsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
   const setConfirmedValuesTracked = useCallback(
     (
       updater:
@@ -262,7 +300,7 @@ export function useForge() {
         storeDesignState(runId, { designId: calibrationDesignId, phase: "calibrating" });
       }
 
-      const baseMesh = await getDesignMesh(calibrationDesignId);
+      const baseMesh = await fetchMesh(calibrationDesignId);
       if (signal.aborted) return;
       if (baseMesh !== null) setMesh(baseMesh);
 
@@ -286,9 +324,15 @@ export function useForge() {
           `Rendering previews for ${param.name} (${index + 1}/${pending.length})…`,
         );
         const frames = await Promise.all(
-          values.map((value) =>
-            renderDesignWithParams(calibrationDesignId, { [param.name]: value }),
-          ),
+          values.map(async (value) => {
+            // Preview only: lowered geometry with the sweep value merged in,
+            // meshed in the client worker. Nothing is persisted server-side.
+            const geometry = await getDesignGeometry(calibrationDesignId, {
+              values: { [param.name]: value },
+              quality: MESH_QUALITY,
+            });
+            return geometry === null ? null : meshGeometryToGroup(geometry);
+          }),
         );
         if (signal.aborted) return;
         const sweep: ParamSweep = {
@@ -424,22 +468,23 @@ export function useForge() {
             for (;;) {
               const { value: ev, done } = await variantStream.next();
               if (done || ev.type === "end") break;
-              if (ev.type === "mesh") {
+              if (ev.type === "geometry") {
                 try {
-                  variantMesh = parseMeshBase64(ev.data);
+                  variantMesh = await meshGeometryToGroup(ev.data);
+                  if (variantMesh === null) continue;
                   variantMeshes.set(variantId, variantMesh);
                   // Streaming preview: rendered grayed out until the final
-                  // render unlocks the tile.
+                  // fetch unlocks the tile.
                   patchVariant(variantId, { mesh: variantMesh, status: "preview" });
                 } catch {
-                  // skip unparseable frame
+                  // skip unmeshable frame
                 }
               } else if (ev.type === "error") {
                 throw new Error(ev.data || "Forge error during initial generation");
               }
             }
 
-            const finalVariantMesh = await getDesignMesh(variantId);
+            const finalVariantMesh = await fetchMesh(variantId);
             if (signal.aborted) return;
             if (finalVariantMesh !== null) {
               variantMeshes.set(variantId, finalVariantMesh);
@@ -506,11 +551,23 @@ export function useForge() {
         if (runId && chosenId) {
           // Keep the variant ids so leaving and returning reopens the picker
           // rather than locking the user into the picked design.
-          storeDesignState(runId, {
+          const initialRunId = runId;
+          const iterations = [
+            {
+              round: 1,
+              feedback: handoffs[0],
+              sourceDesignId: startedVariantIds[0] ?? chosenId,
+              variantIds: [...startedVariantIds],
+              pickedDesignId: chosenId,
+            },
+          ];
+          setIterationsTracked(iterations);
+          storeDesignState(initialRunId, {
             designId: chosenId,
             phase: "calibrating",
             variantDesignIds: [...startedVariantIds],
             selectedHandoff: variantHandoffs.get(chosenId),
+            iterations,
           });
         }
         if (chosenId === null) return;
@@ -553,7 +610,7 @@ export function useForge() {
         releaseBusy(lock);
       }
     },
-    [runCalibration, patchVariant, removeVariant, stopActiveVariants, acquireBusy, releaseBusy],
+    [runCalibration, patchVariant, removeVariant, stopActiveVariants, acquireBusy, releaseBusy, setIterationsTracked],
   );
 
   // Local-only confirmation: nothing is sent to Forge here. Values live in
@@ -578,7 +635,7 @@ export function useForge() {
         if (Object.keys(values).length > 0) {
           await patchParameters(currentDesignId, values);
         }
-        const updatedMesh = await getDesignMesh(currentDesignId);
+        const updatedMesh = await fetchMesh(currentDesignId);
         if (updatedMesh !== null) setMesh(updatedMesh);
         setPhase("ready");
         if (runId) {
@@ -642,30 +699,31 @@ export function useForge() {
       await Promise.allSettled(
         variantDesignIds.map(async (variantDesignId) => {
           try {
-            let variantMesh = await getDesignMesh(variantDesignId);
+            let variantMesh = await fetchMesh(variantDesignId);
 
             if (variantMesh === null && !signal.aborted) {
               // Nothing stored yet — the generation turn may still be live.
               // Reattach the stream and wait for it to finish, then try the
-              // stored render again.
+              // stored geometry again.
               const stream = subscribeDesignStream(variantDesignId, signal);
               for (;;) {
                 const { value: ev, done } = await stream.next();
                 if (done || ev.type === "end" || ev.type === "error") break;
                 if (ev.type === "running" && ev.data === false) break;
-                if (ev.type === "mesh") {
+                if (ev.type === "geometry") {
                   try {
-                    const restoredMesh = parseMeshBase64(ev.data);
+                    const restoredMesh = await meshGeometryToGroup(ev.data);
+                    if (restoredMesh === null) continue;
                     patchVariant(variantDesignId, {
                       mesh: restoredMesh,
                       status: "preview",
                     });
                   } catch {
-                    // skip unparseable frame
+                    // skip unmeshable frame
                   }
                 }
               }
-              variantMesh = signal.aborted ? null : await getDesignMesh(variantDesignId);
+              variantMesh = signal.aborted ? null : await fetchMesh(variantDesignId);
             }
 
             if (signal.aborted) return;
@@ -740,6 +798,9 @@ export function useForge() {
       setPhase("initializing");
       setStatusMessage("Restoring your model…");
       setError("");
+      setIterationsTracked(
+        Array.isArray(stored.iterations) ? stored.iterations : [],
+      );
 
       try {
         let targetDesignId: string | undefined = stored.designId;
@@ -820,7 +881,7 @@ export function useForge() {
         const calibratable = rawParams.filter(isCalibratable);
 
         if (calibratable.length === 0) {
-          const readyMesh = await getDesignMesh(targetDesignId);
+          const readyMesh = await fetchMesh(targetDesignId);
           if (signal.aborted) return false;
           if (readyMesh === null) {
             clearStoredDesignState(runId);
@@ -849,151 +910,26 @@ export function useForge() {
         releaseBusy(lock);
       }
     },
-    [runCalibration, rehydrateVariants, acquireBusy, releaseBusy],
-  );
-
-  const refineExistingDesign = useCallback(
-    async ({
-      instruction,
-      runId,
-    }: {
-      instruction: string;
-      runId: string | null;
-    }): Promise<boolean> => {
-      if (!designId) {
-        setError("No existing Forge design is available to refine.");
-        return false;
-      }
-      if (!instruction?.trim()) {
-        return false;
-      }
-
-      const lock = {};
-      if (!acquireBusy(lock)) {
-        console.warn("[Forge] refine skipped — another operation is in flight");
-        return false;
-      }
-
-      // Unpark any previous parked operation and cancel it before beginning
-      // the refinement turn. The existing design itself is preserved.
-      chooseResolverRef.current?.(null);
-      chooseResolverRef.current = null;
-      abortRef.current?.abort();
-      const controller = new AbortController();
-      abortRef.current = controller;
-      const { signal } = controller;
-
-      setError("");
-      setStatusMessage("Updating the model from your feedback…");
-      setPhase("initializing");
-      setParameters([]);
-
-      try {
-        // Subscribe before sending the message so we do not miss the
-        // beginning of Forge's regeneration stream.
-        const stream = subscribeDesignStream(designId, signal);
-        await sendDesignMessage(designId, instruction.trim());
-        if (signal.aborted) return false;
-
-        let updatedMesh: THREE_Group | null = null;
-        let turnStarted = false;
-
-        // The Forge stream may stay open for future turns, so "running:
-        // false" after we have observed the turn is the completion signal.
-        for (;;) {
-          if (signal.aborted) return false;
-          const { value: ev, done } = await stream.next();
-          if (done) break;
-          if (ev.type === "running") {
-            if (ev.data === true) {
-              turnStarted = true;
-            } else if (turnStarted) {
-              break;
-            }
-          } else if (ev.type === "mesh") {
-            try {
-              updatedMesh = parseMeshBase64(ev.data);
-            } catch {
-              // Ignore an unparseable intermediate mesh.
-            }
-          } else if (ev.type === "error") {
-            throw new Error(ev.data || "Forge error during refinement");
-          } else if (ev.type === "end") {
-            break;
-          }
-        }
-
-        if (signal.aborted) return false;
-
-        const updatedDesign = await getDesign(designId);
-        if (signal.aborted) return false;
-        if (!updatedDesign) {
-          throw new Error("Forge could not return the updated design.");
-        }
-
-        // Fetch the final stored mesh even if an intermediate mesh arrived
-        // through SSE — it represents Forge's latest stored design.
-        const updatedFromServer = await getDesignMesh(designId);
-        if (signal.aborted) return false;
-        if (updatedFromServer !== null) {
-          updatedMesh = updatedFromServer;
-        }
-        if (updatedMesh !== null) {
-          setMesh(updatedMesh);
-        }
-
-        const rawParams = updatedDesign.overview?.parameters ?? [];
-        const calibratable = rawParams.filter(isCalibratable);
-
-        if (calibratable.length === 0) {
-          setStatusMessage("");
-          setPhase("ready");
-          if (runId) {
-            storeDesignState(runId, { designId, phase: "ready" });
-          }
-          return true;
-        }
-
-        await runCalibration({
-          designId,
-          calibratable,
-          signal,
-          runId,
-        });
-        return true;
-      } catch (err) {
-        if (signal.aborted) return false;
-        console.error("Forge refinement failed:", err);
-        const serverMsg = (err as { response?: { data?: { error?: string } } })
-          ?.response?.data?.error;
-        setError(
-          serverMsg ??
-            (err instanceof Error ? err.message : "Forge refinement failed."),
-        );
-        setStatusMessage("");
-        setPhase("error");
-        return false;
-      } finally {
-        releaseBusy(lock);
-      }
-    },
-    [designId, runCalibration, acquireBusy, releaseBusy],
+    [runCalibration, rehydrateVariants, acquireBusy, releaseBusy, setIterationsTracked],
   );
 
   /*
-    Feedback iteration round: the chosen design is duplicated N - 1 times
-    (N = the number of handoff documents the pipeline supplied, matching the
-    initial variant count), the feedback message is sent to every copy
-    plus the original, and the SAME picker view fills in exactly as during
-    the initial generation. The round parks on the user's pick with the lock
-    released, so the next chat instruction starts round N+1 — indefinitely.
+    Feedback iteration round: the carried-forward design is duplicated into
+    three copies, the feedback message is sent ONLY to those copies (the
+    source design is never re-sent, it is carried forward untouched), and
+    the SAME picker view fills in exactly as during the initial generation.
+    When the user picks a copy, that copy is carried forward and the next
+    round duplicates it into three fresh copies. Each round is recorded as
+    an iteration so the frontend can show a timeline of previous rounds.
+    The round parks on the user's pick with the lock released, so the next
+    chat instruction starts round N+1 — indefinitely.
   */
   const duplicateAndRefine = useCallback(
     async ({
       feedback,
       sourceDesignId,
       runId,
-      variantCount,
+      variantCount: requestedVariantCount,
     }: {
       feedback: string;
       sourceDesignId: string | null;
@@ -1025,7 +961,8 @@ export function useForge() {
       const { signal } = controller;
 
       // The previous round's turns keep running server-side after the local
-      // abort — stop them before their ids are lost. The source survives.
+      // abort — stop them before their ids are lost. The carried-forward
+      // source survives.
       const previousIds = [...activeVariantIdsRef.current];
       activeVariantIdsRef.current = new Set();
       previousIds
@@ -1044,11 +981,12 @@ export function useForge() {
       setVariants([]);
 
       try {
-        // The source tile exists immediately (spinner), the duplicate tiles
-        // appear as their copy requests resolve.
-        const startedVariantIds = [source];
-        activeVariantIdsRef.current.add(source);
+        // Every candidate is a fresh duplicate of the carried-forward
+        // design; the source itself is never re-sent.
+        const startedVariantIds: string[] = [];
+        activeVariantIdsRef.current = new Set();
         const noteVariant = (variantId: string) => {
+          if (startedVariantIds.includes(variantId)) return;
           startedVariantIds.push(variantId);
           activeVariantIdsRef.current.add(variantId);
           if (runId) {
@@ -1058,11 +996,11 @@ export function useForge() {
             });
           }
         };
-        setVariants([
-          { designId: source, mesh: null, status: "generating", error: null },
-        ]);
         setPhase("choosing");
         setStatusMessage("");
+
+        // spec: each feedback stage always produces three designs.
+        const candidateCount = Math.max(requestedVariantCount ?? 3, 1);
 
         const childControllers: AbortController[] = [];
         let settledCount = 0;
@@ -1085,33 +1023,29 @@ export function useForge() {
           }
         };
 
-        // One candidate's turn — identical per-tile flow to generate().
-        const runCandidate = async (candidateId: string, isSource: boolean) => {
-          let runningId = candidateId;
+        // One candidate's turn: duplicate the carried-forward source, then
+        // send the feedback to the copy only.
+        const runCandidate = async () => {
+          const runningId = await duplicateDesign(source);
+          noteVariant(runningId);
+          setVariants((prev) =>
+            prev.some((v) => v.designId === runningId)
+              ? prev
+              : [
+                  ...prev,
+                  {
+                    designId: runningId,
+                    mesh: null,
+                    status: "generating" as const,
+                    error: null,
+                  },
+                ],
+          );
           const child = new AbortController();
           signal.addEventListener("abort", () => child.abort(), { once: true });
           childControllers.push(child);
 
           try {
-            if (!isSource) {
-              runningId = await duplicateDesign(source);
-              noteVariant(runningId);
-              activeVariantIdsRef.current.add(runningId);
-              setVariants((prev) =>
-                prev.some((v) => v.designId === runningId)
-                  ? prev
-                  : [
-                      ...prev,
-                      {
-                        designId: runningId,
-                        mesh: null,
-                        status: "generating" as const,
-                        error: null,
-                      },
-                    ],
-              );
-            }
-
             const stream = subscribeDesignStream(runningId, child.signal);
             await sendDesignMessage(runningId, feedback.trim());
 
@@ -1123,24 +1057,25 @@ export function useForge() {
               if (ev.type === "running") {
                 if (ev.data === true) turnStarted = true;
                 else if (turnStarted) break;
-              } else if (ev.type === "mesh") {
+              } else if (ev.type === "geometry") {
                 try {
-                  candidateMesh = parseMeshBase64(ev.data);
+                  candidateMesh = await meshGeometryToGroup(ev.data);
+                  if (candidateMesh === null) continue;
                   patchVariant(runningId, {
                     mesh: candidateMesh,
                     status: "preview",
                   });
                 } catch {
-                  // skip unparseable frame
+                  // skip unmeshable frame
                 }
-              } else if (ev.type === "error") {
+            } else if (ev.type === "error") {
                 throw new Error(
                   ev.data || "Forge error during feedback iteration",
                 );
               }
             }
 
-            const finalMesh = await getDesignMesh(runningId);
+            const finalMesh = await fetchMesh(runningId);
             if (finalMesh !== null) {
               candidateMesh = finalMesh;
               patchVariant(runningId, { mesh: candidateMesh, status: "ready" });
@@ -1153,10 +1088,7 @@ export function useForge() {
           } catch (err) {
             activeVariantIdsRef.current.delete(runningId);
             if (!signal.aborted) {
-              console.warn(
-                `[Forge] feedback candidate ${isSource ? "(source)" : ""} failed:`,
-                err,
-              );
+              console.warn(`[Forge] feedback candidate failed:`, err);
               removeVariant(runningId);
             }
           } finally {
@@ -1165,13 +1097,10 @@ export function useForge() {
           }
         };
 
-        // Fire all candidates at once. The lock is released while parked so
-        // the next chat instruction can start round N+1 from here.
-        runCandidate(source, true);
-        Array.from(
-          { length: Math.max((variantCount ?? 1) - 1, 0) },
-          () => runCandidate(source, false),
-        );
+        // Fire all candidates at once — each is a duplicate of the
+        // carried-forward source. The lock is released while parked so the
+        // next chat instruction can start round N+1 from here.
+        Array.from({ length: candidateCount }, () => runCandidate());
 
         releaseBusy(lock);
         const chosenId = await new Promise<string | null>((resolve) => {
@@ -1195,11 +1124,22 @@ export function useForge() {
         chooseResolverRef.current = null;
 
         // The picked design continues into calibration, mirroring the tail
-        // of generate().
+        // of generate(). The picked copy is carried forward as the next
+        // round's source.
         setVariants([]);
         setDesignId(chosenId);
+        const roundIndex = iterationsRef.current.length + 1;
+        const roundIteration: ForgeIteration = {
+          round: roundIndex,
+          feedback: feedback.trim(),
+          sourceDesignId: source,
+          variantIds: [...startedVariantIds],
+          pickedDesignId: chosenId ?? undefined,
+        };
+        const nextIterations = [...iterationsRef.current, roundIteration];
+        setIterationsTracked(nextIterations);
         if (chosenId === null) return;
-        const chosenMesh = await getDesignMesh(chosenId);
+        const chosenMesh = await fetchMesh(chosenId);
         if (signal.aborted) return;
         if (chosenMesh !== null) setMesh(chosenMesh);
         if (runId) {
@@ -1207,6 +1147,7 @@ export function useForge() {
             designId: chosenId,
             phase: "calibrating",
             variantDesignIds: [...startedVariantIds],
+            iterations: nextIterations,
           });
         }
 
@@ -1245,7 +1186,7 @@ export function useForge() {
         releaseBusy(lock);
       }
     },
-    [designId, runCalibration, patchVariant, removeVariant, acquireBusy, releaseBusy],
+    [designId, runCalibration, patchVariant, removeVariant, acquireBusy, releaseBusy, setIterationsTracked],
   );
 
   const reset = useCallback(() => {
@@ -1267,7 +1208,8 @@ export function useForge() {
     setParamSweeps({});
     setConfirmedValues({});
     confirmedValuesRef.current = {};
-  }, [stopActiveVariants]);
+    setIterationsTracked([]);
+  }, [stopActiveVariants, setIterationsTracked]);
 
   return {
     phase,
@@ -1277,13 +1219,13 @@ export function useForge() {
     statusMessage,
     designId,
     selectedHandoff,
+    iterations,
     variants,
     busy,
     paramSweeps,
     confirmedValues,
     generate,
     rehydrate,
-    refineExistingDesign,
     duplicateAndRefine,
     chooseDesign,
     confirmParamValue,

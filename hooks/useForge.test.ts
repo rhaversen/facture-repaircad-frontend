@@ -5,6 +5,8 @@ import "./testAct";
 import { useForge, loadStoredDesignState, clearStoredDesignState } from "./useForge";
 import type { StreamEvent } from "@/lib/forgeClient";
 import * as forgeClient from "@/lib/forgeClient";
+import * as geometryBridge from "@/lib/geometryBridge";
+import { MESH_QUALITY } from "@/lib/geometryBridge";
 
 /*
   The hook parks asynchronously; waitFor() inside act() fights React's act
@@ -40,21 +42,30 @@ vi.mock("@/lib/forgeClient", async (importOriginal) => {
     stopDesign: vi.fn(),
     sendDesignMessage: vi.fn(),
     getDesign: vi.fn(),
-    getDesignMesh: vi.fn(),
+    getDesignGeometry: vi.fn(),
     subscribeDesignStream: vi.fn(),
-    // The real parsers decode binary FMSH mesh payloads; tests hand back
+  };
+});
+
+vi.mock("@/lib/geometryBridge", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/geometryBridge")>();
+  return {
+    ...actual,
+    // The real mesher runs manifold WASM in a worker; tests hand back
     // plain stand-ins.
-    parseMeshBase64: vi.fn(() => ({}) as never),
-    parseMeshArrayBuffer: vi.fn(() => ({}) as never),
+    meshGeometryToGroup: vi.fn(() => ({}) as never),
   };
 });
 
 const HANDOFFS = ["handoff-one", "handoff-two", "handoff-three"];
 const IDS = ["id-1", "id-2", "id-3"];
+/** Ids handed out by duplicateDesign mocks in call order. */
+const DUPLICATE_IDS = ["dup-1", "dup-2", "dup-3"];
 
 function meshEvent(): StreamEvent {
-  // Minimal base64 payload; the hook only forwards it to parseMeshBase64.
-  return { type: "mesh", data: "" };
+  // Minimal lowered geometry document; the hook only forwards it to
+  // meshGeometryToGroup.
+  return { type: "geometry", data: { units: "mm", instances: [], framing: { size: null, center: [0, 0, 0], maxDim: 0 } } };
 }
 
 function endEvent(): StreamEvent {
@@ -87,8 +98,36 @@ function mockSuccessfulGeneration() {
     yield meshEvent();
     yield endEvent();
   });
-  vi.mocked(forgeClient.getDesignMesh).mockResolvedValue({ children: [] } as never);
+  vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
+    units: "mm",
+    instances: [],
+    framing: { size: null, center: [0, 0, 0], maxDim: 0 },
+  });
+  vi.mocked(geometryBridge.meshGeometryToGroup).mockResolvedValue({ children: [] } as never);
   // No calibratable parameters → generation goes straight to ready on pick.
+  vi.mocked(forgeClient.getDesign).mockResolvedValue({
+    overview: { parameters: [] },
+  });
+}
+
+/** Wire mocks for a successful duplicate-3 feedback round. */
+function mockSuccessfulFeedbackRound() {
+  let dupCalls = 0;
+  vi.mocked(forgeClient.duplicateDesign).mockImplementation(async () => {
+    dupCalls++;
+    return DUPLICATE_IDS[(dupCalls - 1) % DUPLICATE_IDS.length];
+  });
+  vi.mocked(forgeClient.sendDesignMessage).mockResolvedValue(undefined);
+  vi.mocked(forgeClient.subscribeDesignStream).mockImplementation(async function* () {
+    yield meshEvent();
+    yield endEvent();
+  });
+  vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
+    units: "mm",
+    instances: [],
+    framing: { size: null, center: [0, 0, 0], maxDim: 0 },
+  });
+  vi.mocked(geometryBridge.meshGeometryToGroup).mockResolvedValue({ children: [] } as never);
   vi.mocked(forgeClient.getDesign).mockResolvedValue({
     overview: { parameters: [] },
   });
@@ -216,8 +255,12 @@ describe("useForge variant selection", () => {
         },
       }),
     );
-    vi.mocked(forgeClient.getDesignMesh).mockResolvedValue({ children: [] } as never);
-    // parseMeshBase64 on an empty payload must not crash the round.
+    vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
+      units: "mm",
+      instances: [],
+      framing: { size: null, center: [0, 0, 0], maxDim: 0 },
+    });
+    // meshGeometryToGroup on an empty document must not crash the round.
 
     const { result } = renderHook(() => useForge());
     let restored = false;
@@ -245,7 +288,11 @@ describe("useForge variant selection", () => {
     vi.mocked(forgeClient.getDesign).mockResolvedValue({
       overview: { parameters: [] },
     });
-    vi.mocked(forgeClient.getDesignMesh).mockResolvedValue({ children: [] } as never);
+    vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
+      units: "mm",
+      instances: [],
+      framing: { size: null, center: [0, 0, 0], maxDim: 0 },
+    });
 
     const { result } = renderHook(() => useForge());
     let restored = false;
@@ -296,7 +343,12 @@ describe("useForge picker SSE handling", () => {
     vi.mocked(forgeClient.getDesign).mockResolvedValue({
       overview: { parameters: [] },
     });
-    vi.mocked(forgeClient.getDesignMesh).mockResolvedValue({ children: [] } as never);
+    vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
+      units: "mm",
+      instances: [],
+      framing: { size: null, center: [0, 0, 0], maxDim: 0 },
+    });
+    vi.mocked(geometryBridge.meshGeometryToGroup).mockResolvedValue({ children: [] } as never);
   });
 
   afterEach(() => {
@@ -336,7 +388,7 @@ describe("useForge picker SSE handling", () => {
     expect(result.current.designId).toBe("id-1");
   });
 
-  it("streams SSE mesh frames through a real ReadableStream response", async () => {
+  it("streams SSE ir frames through a real ReadableStream response", async () => {
     vi.mocked(forgeClient.subscribeDesignStream).mockImplementation(
       async function* () {
         yield meshEvent();
@@ -347,11 +399,11 @@ describe("useForge picker SSE handling", () => {
     // client's parseStreamEvent expects.
     const raw = sseStream([meshEvent(), endEvent()]);
     const text = await new Response(raw).text();
-    expect(text).toContain("event: mesh");
+    expect(text).toContain("event: geometry");
     expect(text).toContain("event: end");
   });
 
-  it("marks surviving tiles ready via the mesh fetch", async () => {
+  it("marks surviving tiles ready via the geometry fetch", async () => {
     vi.mocked(forgeClient.subscribeDesignStream).mockImplementation(
       async function* () {
         yield endEvent();
@@ -370,7 +422,7 @@ describe("useForge picker SSE handling", () => {
     await poll(
       () => result.current.phase === "ready" || result.current.phase === "error",
     );
-    expect(forgeClient.getDesignMesh).toHaveBeenCalledWith("id-1");
+    expect(forgeClient.getDesignGeometry).toHaveBeenCalledWith("id-1", { quality: MESH_QUALITY });
     expect(result.current.phase).toBe("ready");
   });
 
@@ -394,6 +446,221 @@ describe("useForge picker SSE handling", () => {
     await parked;
     expect(result.current.error).toMatch(/could not generate any/i);
     expect(forgeClient.stopDesign).not.toHaveBeenCalled();
+  });
+});
+
+describe("useForge duplicate-3 feedback rounds", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.clearAllMocks();
+    mockSuccessfulGeneration();
+    mockSuccessfulFeedbackRound();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /* Full round: pick from the initial trio, then drive one feedback round
+     (three duplicates, no message to the source) and pick again. The render
+     hook stays owned by the caller so state updates stay visible. */
+  async function runInitialGenerationAndPick(
+    result: { current: ReturnType<typeof useForge> },
+    runId: string,
+    pickedId: string,
+  ): Promise<void> {
+    let parked!: Promise<void>;
+    act(() => {
+      parked = result.current.generate({ handoffs: HANDOFFS, runId });
+    });
+    await poll(() => result.current.variants.length === HANDOFFS.length);
+    await poll(() => result.current.phase === "choosing");
+    act(() => {
+      result.current.chooseDesign(pickedId);
+    });
+    await parked;
+    await poll(
+      () => result.current.phase === "ready" || result.current.phase === "error",
+    );
+  }
+
+  it("duplicates the picked design into three copies and never re-sends to the source", async () => {
+    const { result } = renderHook(() => useForge());
+    await runInitialGenerationAndPick(result, "run-dup-1", "id-2");
+
+    let parked!: Promise<void>;
+    act(() => {
+      parked = result.current.duplicateAndRefine({
+        feedback: "round two feedback",
+        sourceDesignId: "id-2",
+        runId: "run-dup-1",
+      });
+    });
+    await poll(() => result.current.variants.length === 3);
+    await poll(() => result.current.phase === "choosing");
+    act(() => {
+      result.current.chooseDesign("dup-2");
+    });
+    await parked;
+    await poll(
+      () =>
+        result.current.phase === "ready" || result.current.phase === "error",
+    );
+
+    expect(forgeClient.duplicateDesign).toHaveBeenCalledTimes(3);
+    expect(forgeClient.duplicateDesign).toHaveBeenCalledWith("id-2");
+    // Three feedback messages, one per duplicate, none to the carried-forward
+    // source.
+    const sent = vi.mocked(forgeClient.sendDesignMessage).mock.calls;
+    const dupMsgs = sent.filter(([designId]) => DUPLICATE_IDS.includes(designId));
+    expect(dupMsgs).toHaveLength(3);
+    for (const [designId, message] of dupMsgs) {
+      expect(message).toBe("round two feedback");
+      expect(IDS).not.toContain(designId);
+    }
+    expect(result.current.designId).toBe("dup-2");
+  });
+
+  it("records each round as an iteration lineage entry with the picked design", async () => {
+    const { result } = renderHook(() => useForge());
+    await runInitialGenerationAndPick(result, "run-dup-2", "id-1");
+
+    let parked!: Promise<void>;
+    act(() => {
+      parked = result.current.duplicateAndRefine({
+        feedback: "make it sturdier",
+        sourceDesignId: "id-1",
+        runId: "run-dup-2",
+      });
+    });
+    await poll(() => result.current.variants.length === 3);
+    await poll(() => result.current.phase === "choosing");
+    act(() => {
+      result.current.chooseDesign("dup-3");
+    });
+    await parked;
+    await poll(
+      () =>
+        result.current.phase === "ready" || result.current.phase === "error",
+    );
+
+    expect(result.current.iterations).toHaveLength(2);
+    const [firstRound, secondRound] = result.current.iterations;
+    // Initial generation counts as its own round.
+    expect(firstRound.round).toBe(1);
+    expect(firstRound.feedback).toBe("handoff-one");
+    expect(firstRound.pickedDesignId).toBe("id-1");
+    expect(secondRound.round).toBe(2);
+    expect(secondRound.feedback).toBe("make it sturdier");
+    expect(secondRound.sourceDesignId).toBe("id-1");
+    expect(secondRound.variantIds).toEqual(DUPLICATE_IDS);
+    expect(secondRound.pickedDesignId).toBe("dup-3");
+
+    const stored = loadStoredDesignState("run-dup-2");
+    expect(stored?.iterations).toEqual(result.current.iterations);
+  });
+
+  it("stills loads legacy store entries with no iterations key", async () => {
+    window.localStorage.setItem(
+      "repaircad.forgeDesigns",
+      JSON.stringify({
+        "run-dup-3": {
+          designId: "id-2",
+          phase: "ready",
+          selectedHandoff: "handoff-two",
+        },
+      }),
+    );
+
+    const { result } = renderHook(() => useForge());
+    let restored = false;
+    await act(async () => {
+      restored = await result.current.rehydrate({
+        runId: "run-dup-3",
+        handoffs: HANDOFFS,
+      });
+    });
+
+    expect(restored).toBe(true);
+    expect(result.current.designId).toBe("id-2");
+    expect(result.current.iterations).toEqual([]);
+  });
+
+  it("restores a recorded iteration lineage on rehydrate", async () => {
+    const lineage = [
+      {
+        round: 1,
+        feedback: "handoff-one",
+        sourceDesignId: "id-1",
+        variantIds: ["id-1", "id-2", "id-3"],
+        pickedDesignId: "id-1",
+      },
+      {
+        round: 2,
+        feedback: "make it sturdier",
+        sourceDesignId: "id-1",
+        variantIds: DUPLICATE_IDS,
+        pickedDesignId: "dup-2",
+      },
+    ];
+    window.localStorage.setItem(
+      "repaircad.forgeDesigns",
+      JSON.stringify({
+        "run-dup-4": {
+          designId: "dup-2",
+          phase: "ready",
+          selectedHandoff: "handoff-one",
+          iterations: lineage,
+        },
+      }),
+    );
+
+    const { result } = renderHook(() => useForge());
+    let restored = false;
+    await act(async () => {
+      restored = await result.current.rehydrate({
+        runId: "run-dup-4",
+        handoffs: HANDOFFS,
+      });
+    });
+
+    expect(restored).toBe(true);
+    expect(result.current.iterations).toEqual(lineage);
+    expect(result.current.designId).toBe("dup-2");
+  });
+
+  it("clears the lineage on reset", async () => {
+    const lineage = [
+      {
+        round: 1,
+        feedback: "handoff-one",
+        sourceDesignId: "id-1",
+        variantIds: ["id-1", "id-2", "id-3"],
+        pickedDesignId: "id-1",
+      },
+    ];
+    window.localStorage.setItem(
+      "repaircad.forgeDesigns",
+      JSON.stringify({
+        "run-dup-5": {
+          designId: "id-1",
+          phase: "ready",
+          selectedHandoff: "handoff-one",
+          iterations: lineage,
+        },
+      }),
+    );
+
+    const { result } = renderHook(() => useForge());
+    await act(async () => {
+      await result.current.rehydrate({ runId: "run-dup-5", handoffs: HANDOFFS });
+    });
+    expect(result.current.iterations).toEqual(lineage);
+
+    act(() => {
+      result.current.reset();
+    });
+    expect(result.current.iterations).toEqual([]);
   });
 });
 

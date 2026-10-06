@@ -83,7 +83,7 @@ export default function ReviewIntake({
         <h1>Review your repair</h1>
 
         <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
-          Check the information below before submitting it to RepairCAD.
+          Check the information below before submitting.
         </p>
 
         <div className="mt-8">
@@ -158,7 +158,7 @@ export default function ReviewIntake({
             onClick={() => onSubmit(annotatedCopies)}
             disabled={submitting || !allCopiesReady}
           >
-            {submitting ? "Submitting..." : "Submit to RepairCAD"}
+            {submitting ? "Submitting..." : "Submit"}
           </button>
         </div>
       </Card>

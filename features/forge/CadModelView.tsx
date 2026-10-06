@@ -65,12 +65,12 @@ export default function CadModelView({
     confirmedValues,
     generate,
     rehydrate,
-    refineExistingDesign,
     duplicateAndRefine,
     chooseDesign,
     confirmParamValue,
     finishCalibration,
     reset,
+    iterations,
   } = forge;
 
   /*
@@ -136,9 +136,10 @@ export default function CadModelView({
 
   /*
     When R3 produces a new Forge instruction, apply it to the Forge design.
-    While calibrating/ready this regenerates the existing design via
-    refineExistingDesign(); during "choosing" the instruction is applied as a
-    feedback round on the currently selected candidate instead.
+    The carried-forward design is never re-sent: every round duplicating it
+    into three copies which receive the feedback (both while "choosing" and
+    when a design is calibrated/ready), the user then picks one of the three
+    copies to carry into the next round.
   */
   useEffect(() => {
     const instruction = refinementRunningDoc?.forge_instruction?.trim();
@@ -152,36 +153,30 @@ export default function CadModelView({
     if (lastProcessedForgeInstructionRef.current === instruction) return;
     lastProcessedForgeInstructionRef.current = instruction;
 
-    if (phase === "choosing") {
-      // A feedback instruction always iterates the highlighted design — even
-      // while other candidates are still streaming; the new round unparks and
-      // replaces them all.
-      const sourceDesignId =
-        pickerSelectedId ?? lastSelectedDesignIdRef.current ?? variants[0]?.designId ?? null;
-      if (sourceDesignId === null) {
-        lastProcessedForgeInstructionRef.current = null;
-        return;
-      }
-      setIteratingFeedback(true);
-      // The new round replaces the candidates — nothing stays selected.
-      lastSelectedDesignIdRef.current = null;
-      setPickerSelectedId(null);
-      duplicateAndRefine({
-        feedback: instruction,
-        sourceDesignId,
-        runId,
-        variantCount: handoffs.length,
-      }).finally(() => {
-        setIteratingFeedback(false);
-      });
+    // A feedback instruction always iterates the currently relevant design —
+    // the picker's highlighted candidate while choosing, otherwise the live
+    // design.
+    const sourceDesignId =
+      pickerSelectedId ??
+      lastSelectedDesignIdRef.current ??
+      designId ??
+      variants[0]?.designId ??
+      null;
+    if (sourceDesignId === null) {
+      lastProcessedForgeInstructionRef.current = null;
       return;
     }
-
-    refineExistingDesign({ instruction, runId }).then((success) => {
-      if (!success) {
-        // Allow the same instruction to be retried if Forge failed.
-        lastProcessedForgeInstructionRef.current = null;
-      }
+    setIteratingFeedback(true);
+    // The new round replaces the candidates — nothing stays selected.
+    lastSelectedDesignIdRef.current = null;
+    setPickerSelectedId(null);
+    duplicateAndRefine({
+      feedback: instruction,
+      sourceDesignId,
+      runId,
+      variantCount: 3,
+    }).finally(() => {
+      setIteratingFeedback(false);
     });
   }, [
     refinementRunningDoc,
@@ -191,9 +186,8 @@ export default function CadModelView({
     busy,
     runId,
     pickerSelectedId,
-    handoffs.length,
+    designId,
     duplicateAndRefine,
-    refineExistingDesign,
   ]);
 
   // Calibration input is awaiting the user exactly during the calibrating phase.
@@ -241,7 +235,7 @@ export default function CadModelView({
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "repaircad-final-instructions.md";
+    link.download = "repair-instructions.md";
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -259,7 +253,7 @@ export default function CadModelView({
       );
       const link = document.createElement("a");
       link.href = url;
-      link.download = `repaircad-${designId}.geometry.json`;
+      link.download = `design-${designId}.geometry.json`;
       link.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -357,6 +351,7 @@ export default function CadModelView({
                 <DesignPicker
                   key={pickerKey}
                   variants={variants}
+                  iterations={iterations}
                   onSelect={(selectedDesignId) => {
                     lastSelectedDesignIdRef.current = selectedDesignId;
                     setPickerSelectedId(selectedDesignId);
@@ -370,7 +365,7 @@ export default function CadModelView({
                 refinementError={refinementError}
                 disabled={pickerSelectedId === null}
                 disabledMessage="Select a design first…"
-                intro="Ask RepairCAD to change the model, clarify a measurement, or pick apart a candidate. Messages here steer the Forge design. This step is about the right shape only — accurate measurements come in the next step."
+                intro="Ask to change the model, clarify a measurement, or pick apart a candidate. Messages here steer the Forge design. This step is about the right shape only — accurate measurements come in the next step."
               />
             </div>
 
@@ -501,7 +496,7 @@ export default function CadModelView({
               refinementRunId={refinementRunId}
               refinementInitializing={refinementInitializing}
               refinementError={refinementError}
-              intro="Ask RepairCAD to change the model, clarify a measurement, or inspect the current repair design."
+              intro="Ask to change the model, clarify a measurement, or inspect the current repair design."
             />
           </div>
         )}
@@ -598,7 +593,7 @@ function RefinementChat({
         <div className="min-h-0 flex-1">
           <FlowChatFrame
             runId={refinementRunId}
-            title="RepairCAD CAD refinement"
+            title="CAD refinement"
             disabled={disabled}
             disabledMessage={disabledMessage}
           />

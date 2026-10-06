@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "RepairCAD v2.0 -- Next.js port",
+  title: "CAD",
   description: "Describe a broken object, get a parametric repair CAD model.",
 };
 

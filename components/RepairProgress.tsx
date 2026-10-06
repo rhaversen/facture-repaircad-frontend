@@ -6,7 +6,6 @@ const STEPS = [
   "CAD & Refinement",
   "Repair Guidance",
 ];
-
 const MARKER_BASE =
   "relative z-[1] flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full border-2 border-[#c7ccd6] bg-white text-sm font-bold text-[#747b87]";
 const MARKER_COMPLETE = "border-[#2c67d7] bg-[#2c67d7] text-white";
@@ -15,9 +14,20 @@ const MARKER_CURRENT =
 
 const LABEL_BASE = "mt-2 w-full px-1 text-[11px] leading-[1.25] break-words text-[#747b87]";
 
-export default function RepairProgress({ currentStep }: { currentStep: number }) {
+export default function RepairProgress({
+  currentStep,
+  flush = false,
+}: {
+  currentStep: number;
+  /* flush drops the vertical margins for hosts that control their own page padding. */
+  flush?: boolean;
+}) {
   return (
-    <div className="my-7 w-full min-w-0 shrink-0 max-[1050px]:my-3.5 max-[1050px]:mb-6">
+    <div
+      className={`w-full min-w-0 shrink-0 ${
+        flush ? "" : "my-7 max-[1050px]:my-3.5 max-[1050px]:mb-6"
+      }`}
+    >
       {/* Full stepper on wide screens */}
       <div className="flex w-full min-w-0 items-start max-[1050px]:hidden">
         {STEPS.map((step, index) => {

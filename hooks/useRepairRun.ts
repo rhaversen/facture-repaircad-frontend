@@ -187,9 +187,9 @@ export function useRepairRun() {
       const response = await postMessage(activeRunId, intakeMessage, imageIds);
       return await applyTurnResponse(response, activeRunId);
     } catch (error) {
-      console.error("RepairCAD intake submission failed:", error);
+      console.error("Intake submission failed:", error);
       setSubmissionError(
-        "RepairCAD could not process the intake. Please try again.",
+        "The intake could not be processed. Please try again.",
       );
       throw error;
     } finally {
@@ -215,7 +215,7 @@ export function useRepairRun() {
       const response = await postMessage(activeRunId, message, imageIds);
       return await applyTurnResponse(response, activeRunId);
     } catch (error) {
-      console.error("RepairCAD clarification submission failed:", error);
+      console.error("Clarification submission failed:", error);
       await reconcileRun();
       throw error;
     }

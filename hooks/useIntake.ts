@@ -38,28 +38,63 @@ interface DraftBox {
   per-screen state that used to live in App.jsx. Exposes the same pointer
   handlers the annotation canvas binds directly.
 */
-export function useIntake() {
+/*
+  Same photo + annotation + labelled-box engine for both intake screens
+  (the wizard and the clarification sidebar). Runs in auto-commit mode:
+  releasing a drag saves the box straight to the annotation list — no
+  confirmation step, the label is filled in later.
+*/
+export function useIntake(
+  options: { autoCommitToAnnotationList: boolean } = {
+    autoCommitToAnnotationList: true,
+  },
+) {
+  const autoCommit = options.autoCommitToAnnotationList;
   const [description, setDescription] = useState("");
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [draftBox, setDraftBox] = useState<DraftBox | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
+  /* Confirmation-mode extra: pending custom label typed for the draft box. */
+  const [draftLabel, setDraftLabel] = useState("");
 
   const imageWrapperRef = useRef<HTMLDivElement | null>(null);
 
+  /* The selection is derived instead of enforced with an effect: when the
+     stored id is stale or unset, the first photo takes over, so the canvas is
+     populated without an extra click and removing the active photo never
+     leaves the canvas empty. Wizard and clarification sidebar share this. */
+  const effectiveActivePhotoId =
+    photos.find((photo) => photo.id === activePhotoId)?.id ??
+    (photos.length > 0 ? photos[0].id : null);
+
   const addPhotos = useCallback((files: File[]) => {
+    /* Updaters run later (during render), so cap the selection against the
+       photos count as it stands now — nothing else mutates photos in between —
+       and slice before handing the result to the updater. */
+    let accepted: Photo[] = [];
+    const currentIds = files.map(() => crypto.randomUUID());
     setPhotos((current) => {
       const room = MAX_PHOTOS - current.length;
       if (room <= 0) return current;
-      const accepted = files.slice(0, room).map((file) => ({
-        id: crypto.randomUUID(),
-        file,
-        previewUrl: URL.createObjectURL(file),
-        type: "close_up" as const,
-      }));
+      accepted = files
+        .slice(0, room)
+        .map((file, index) => ({
+          id: currentIds[index] ?? crypto.randomUUID(),
+          file,
+          previewUrl: URL.createObjectURL(file),
+          type: "close_up" as const,
+        }));
       return [...current, ...accepted];
     });
+
+    if (files.length > 0) {
+      /* Ids are generated up-front so the same ids are baked into the photos
+         and seeded into activePhotoId, even when the updater runs more than
+         once under Strict Mode. */
+      setActivePhotoId((current) => current ?? currentIds[0]);
+    }
   }, []);
 
   const removePhoto = useCallback(
@@ -77,17 +112,12 @@ export function useIntake() {
       );
 
       setActivePhotoId((current) => (current === photoId ? null : current));
+      setDraftLabel("");
     },
     [],
   );
 
   const openAnnotationScreen = useCallback(() => {
-    setPhotos((current) => {
-      if (current.length > 0) {
-        setActivePhotoId((prev) => prev ?? current[0].id);
-      }
-      return current;
-    });
     setDraftBox(null);
     setIsDrawing(false);
   }, []);
@@ -135,8 +165,10 @@ export function useIntake() {
   );
 
   /*
-    Pointer-up commits the drawn box straight to the annotation list — no
-    confirmation step. Tiny accidental drags are discarded silently.
+    Commit path: pointer-up either commits the drawn box straight to the
+    annotation list (intake wizard, no confirmation step), or leaves it as a
+    draft pending a name + "Save annotation" (clarification flow). Tiny
+    accidental drags are discarded silently in both modes.
   */
   const handlePointerUp = useCallback(
     (event: React.PointerEvent) => {
@@ -148,28 +180,72 @@ export function useIntake() {
         end,
       );
       setIsDrawing(false);
-      setDraftBox(null);
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
 
-      if (!activePhotoId) return;
-      if (box.width < MIN_BOX_SIZE || box.height < MIN_BOX_SIZE) return;
+      if (!effectiveActivePhotoId) return;
+      if (box.width < MIN_BOX_SIZE || box.height < MIN_BOX_SIZE) {
+        setDraftBox(null);
+        if (!autoCommit) setDraftLabel("");
+        return;
+      }
 
-      setAnnotations((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          photoId: activePhotoId,
-          label: "",
-          color: nextAnnotationColor(current.length),
-          box,
-          sizeReference: null,
-        },
-      ]);
+      if (autoCommit) {
+        setDraftBox(null);
+        setAnnotations((current) => [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            photoId: effectiveActivePhotoId,
+            label: "",
+            color: nextAnnotationColor(current.length),
+            box,
+            sizeReference: null,
+          },
+        ]);
+      } else {
+        /* Re-encode as a planar, min-corner box so the canvas can keep
+           rendering it as a stable draft while the user names it. */
+        setDraftBox({
+          startX: box.x,
+          startY: box.y,
+          endX: box.x + box.width,
+          endY: box.y + box.height,
+        });
+      }
     },
-    [isDrawing, draftBox, activePhotoId],
+    [isDrawing, draftBox, effectiveActivePhotoId, autoCommit],
   );
+
+  const commitDraftAnnotation = useCallback(() => {
+    if (!draftBox || !effectiveActivePhotoId) return;
+    const box = normalizedRect(
+      { x: draftBox.startX, y: draftBox.startY },
+      { x: draftBox.endX, y: draftBox.endY },
+    );
+    if (box.width < MIN_BOX_SIZE || box.height < MIN_BOX_SIZE) return;
+
+    setAnnotations((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        photoId: effectiveActivePhotoId,
+        label: draftLabel.trim(),
+        color: nextAnnotationColor(current.length),
+        box,
+        sizeReference: null,
+      },
+    ]);
+    /* Clearing draftBox also drops the preview from the canvas. */
+    setDraftBox(null);
+    setDraftLabel("");
+  }, [draftBox, effectiveActivePhotoId, draftLabel]);
+
+  const cancelDraftAnnotation = useCallback(() => {
+    setDraftBox(null);
+    setDraftLabel("");
+  }, []);
 
   const updateAnnotation = useCallback(
     (annotationId: string, patch: Partial<Annotation>) => {
@@ -208,16 +284,20 @@ export function useIntake() {
     setActivePhotoId(photoId);
     setDraftBox(null);
     setIsDrawing(false);
+    setDraftLabel("");
   }, []);
 
   const activePhoto = useMemo(
-    () => photos.find((photo) => photo.id === activePhotoId) ?? null,
-    [photos, activePhotoId],
+    () => photos.find((photo) => photo.id === effectiveActivePhotoId) ?? null,
+    [photos, effectiveActivePhotoId],
   );
 
   const activeAnnotations = useMemo(
-    () => annotations.filter((annotation) => annotation.photoId === activePhotoId),
-    [annotations, activePhotoId],
+    () =>
+      annotations.filter(
+        (annotation) => annotation.photoId === effectiveActivePhotoId,
+      ),
+    [annotations, effectiveActivePhotoId],
   );
 
   const hasMeasurementReference = useMemo(
@@ -236,6 +316,7 @@ export function useIntake() {
     setAnnotations([]);
     setDraftBox(null);
     setIsDrawing(false);
+    setDraftLabel("");
   }, [photos]);
 
   return {
@@ -245,13 +326,17 @@ export function useIntake() {
     addPhotos,
     removePhoto,
     openAnnotationScreen,
-    activePhotoId,
+    activePhotoId: effectiveActivePhotoId,
     activePhoto,
     activeAnnotations,
     changeActivePhoto,
     annotations,
     draftBox,
     isDrawing,
+    draftLabel,
+    setDraftLabel,
+    commitDraftAnnotation,
+    cancelDraftAnnotation,
     imageWrapperRef,
     handlePointerDown,
     handlePointerMove,

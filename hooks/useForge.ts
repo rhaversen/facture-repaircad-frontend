@@ -330,11 +330,19 @@ export function useForge() {
           values.map(async (value) => {
             // Preview only: lowered geometry with the sweep value merged in,
             // meshed in the client worker. Nothing is persisted server-side.
-            const geometry = await getDesignGeometry(calibrationDesignId, {
-              values: { [param.name]: value },
-              quality: MESH_QUALITY,
-            });
-            return geometry === null ? null : meshGeometryToGroup(geometry);
+            try {
+              const geometry = await getDesignGeometry(calibrationDesignId, {
+                values: { [param.name]: value },
+                quality: MESH_QUALITY,
+              });
+              return geometry === null ? null : meshGeometryToGroup(geometry);
+            } catch {
+              // A single failed frame (network hiccup, transient 5xx)
+              // shows as a gap; null frames are already tolerated by
+              // useActiveSweep, and null here keeps Promise.all from
+              // aborting the whole sweep batch.
+              return null;
+            }
           }),
         );
         if (signal.aborted) return;

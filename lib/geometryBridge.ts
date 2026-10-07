@@ -1,7 +1,7 @@
 "use client";
 
 /** Client-side meshing glue: a lowered SolidDocument fetched from Forge's
- *  GET /:id/geometry route, meshed locally in the geometry worker,
+ *  POST /:id/geometry route, meshed locally in the geometry worker,
  *  converted to a scene Group keyed for drill-down. */
 
 import * as THREE from "three";

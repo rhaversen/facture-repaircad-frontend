@@ -77,13 +77,10 @@ export async function getDesignGeometry(
     quality?: "draft" | "standard" | "fine";
   },
 ): Promise<DesignGeometry | null> {
-  const params = new URLSearchParams();
-  for (const [name, value] of Object.entries(opts?.values ?? {})) {
-    params.append(`values[${name}]`, String(value));
-  }
-  params.set("quality", opts?.quality ?? "draft");
-  const res = await forgeAxios.get(`/designs/${designId}/geometry`, {
-    params,
+  const res = await forgeAxios.post(`/designs/${designId}/geometry`, {
+    values: opts?.values,
+    quality: opts?.quality ?? "draft",
+  }, {
     // 422 = compile failure → treated as "nothing renderable" below.
     validateStatus: (s) => s === 200 || s === 204 || s === 422,
   });

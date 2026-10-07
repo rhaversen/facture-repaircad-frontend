@@ -107,20 +107,20 @@ export interface DesignVariant {
 }
 
 /*
-  One feedback round. Each round duplicates the carried-forward design into
-  three copies, sends the user's feedback only to those copies, and the copy
-  the user picks is carried forward into the next round. The variants a round
-  produced stay referenced so the timeline can list every iteration.
+  One feedback round. The initial generation round records the candidate
+  ids and the picked design. Every refinement round duplicates the current
+  design once, sends the feedback to that copy, and the copy becomes the
+  next round's current design — a linear version history.
 */
 export interface ForgeIteration {
   round: number;
   /** User feedback for this round; null for the initial generation. */
   feedback: string | null;
-  /** Carried-forward design this round duplicated. */
+  /** Design this round duplicated (the previous current design). */
   sourceDesignId: string;
-  /** Designs this round produced (the 3 copies). */
+  /** Designs this round produced: the refinement copy, or the initial candidates. */
   variantIds: string[];
-  /** Design picked out of this round — carried to the next round. */
+  /** Design carried forward out of this round. */
   pickedDesignId?: string;
 }
 

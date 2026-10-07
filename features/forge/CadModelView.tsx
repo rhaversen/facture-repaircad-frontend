@@ -170,7 +170,7 @@ export default function CadModelView({
     Sweep playback: the name of the parameter whose rendered sweep is playing
     in the viewport (null = default model). Each row's "Preview sweep" button
     selects it; the flipbook loops until another parameter is chosen, a value
-    is set, or the row's button is toggled off.
+    is set for the playing parameter, or the row's button is toggled off.
   */
   const [sweepingParam, setSweepingParam] = useState<string | null>(null);
   const { frameValues, frameMeshes } = useActiveSweep(sweepingParam, paramSweeps);
@@ -180,6 +180,14 @@ export default function CadModelView({
 
   function handlePreviewSweep(paramName: string) {
     setSweepingParam((prev) => (prev === paramName ? null : paramName));
+  }
+
+  function handleConfirmParam(paramName: string, value: number) {
+    // A confirmed value pins the played param, so its flipbook stops —
+    // otherwise the republished sweep (fresh frames, reset playhead) would
+    // restart underneath the user as if the value never landed.
+    setSweepingParam((prev) => (prev === paramName ? null : prev));
+    confirmParamValue(paramName, value);
   }
 
   function handleRegenerate() {
@@ -361,7 +369,7 @@ export default function CadModelView({
               confirmedValues={confirmedValues}
               settingParam={null}
               sweepingParam={sweepingParam}
-              onConfirm={confirmParamValue}
+              onConfirm={handleConfirmParam}
               onPreviewSweep={handlePreviewSweep}
               onFinish={() => finishCalibration({ runId })}
             />

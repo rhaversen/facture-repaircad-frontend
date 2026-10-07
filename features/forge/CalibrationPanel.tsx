@@ -2,7 +2,7 @@
 
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { formatParamName, formatParamDescription, deriveSliderRange, isBoolean } from "@/lib/forgeParams";
+import { formatParamName, formatParamDescription, isBoolean } from "@/lib/forgeParams";
 import type { ForgeParameter, ParamSweep } from "@/lib/types";
 
 interface CalibrationPanelProps {
@@ -27,18 +27,17 @@ export default function CalibrationPanel({
   onFinish,
 }: CalibrationPanelProps) {
   /*
-    Values stay local only while editing — a slider commit fires when the
-    drag ends, a typed number commits on blur or Enter, so partial input
-    never lands in the state mid-editing. The commit itself is immediate:
-    the value is PATCHed to Forge and the model re-renders right away, and
-    OK just bakes the final render.
+    Values stay local only while editing — a typed number commits on blur or
+    Enter, so partial input never lands in the state mid-editing. The commit
+    itself is immediate: the value is PATCHed to Forge and the model
+    re-renders right away, and OK just bakes the final render.
   */
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
 
   /*
-    Seed each slider draft from the authoritative value: the confirmed value
-    if the user already set it (survives re-entry and refreshes), otherwise
-    the spec default — sliders never reset to range midpoints. Derived during
+    Seed each input from the authoritative value: the confirmed value if the
+    user already set it (survives re-entry and refreshes), otherwise the
+    spec default — inputs never reset to anything else. Derived during
     render so newly arriving parameters show a value immediately.
   */
   const seeded = useMemo(() => {
@@ -63,7 +62,7 @@ export default function CalibrationPanel({
           : parseFloat(raw);
     if (!isBoolean(param) && (!isFinite(value) || value <= 0)) return;
     onConfirm(param.name, value);
-    // Keep the slider exactly where the user set it.
+    // Keep the input exactly where the user set it.
     setDraftValues((prev) => ({ ...prev, [param.name]: String(value) }));
   }
 
@@ -79,15 +78,6 @@ export default function CalibrationPanel({
     <div className="flex min-h-0 flex-col gap-4 rounded-xl border border-line p-4.5 pr-5 lg:w-[380px] lg:shrink-0">
       <div className="lg:shrink-0">
         <h2 className="mb-1.5 text-lg">Calibrate the model</h2>
-        <p className="mt-2.5 text-[13px] text-[#8a93a1]">
-          All parameter previews render in parallel — a parameter is sweepable
-          as soon as its preview is ready. Use the “▶” preview button to sweep
-          it in the viewport, measure your real object, then set the value.
-          Values apply immediately when you release the slider, or press
-          Enter/leave the field after typing: the change is saved to Forge and
-          the model re-renders straight away, and every sweep rebuilds against
-          the values set so far.
-        </p>
       </div>
 
       <div className="flex min-h-0 flex-col gap-3.5 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain">
@@ -95,7 +85,6 @@ export default function CalibrationPanel({
           const sweep = paramSweeps[param.name] ?? null;
           const confirmed = confirmedValues[param.name];
           const bool = isBoolean(param);
-          const range = bool ? { min: 0, max: 1 } : deriveSliderRange(param);
           const draft = seeded[param.name] ?? "";
           const setNow = confirmed !== undefined;
           const playing = sweepingParam === param.name;
@@ -158,41 +147,8 @@ export default function CalibrationPanel({
               ) : (
                 <div className="flex items-center gap-2.5">
                   <input
-                    type="range"
-                    className="h-5 w-full min-w-0 flex-1 cursor-pointer accent-brand"
-                    value={
-                      draft === ""
-                        ? (range.min + (range.max - range.min) / 2).toFixed(1)
-                        : draft
-                    }
-                    onChange={(e) =>
-                      setDraftValues((prev) => ({ ...prev, [param.name]: e.target.value }))
-                    }
-                    onPointerUp={() => commitParam(param, seeded[param.name])}
-                    onKeyUp={(e) => {
-                      if (
-                        [
-                          "ArrowLeft",
-                          "ArrowRight",
-                          "ArrowUp",
-                          "ArrowDown",
-                          "Home",
-                          "End",
-                          "PageUp",
-                          "PageDown",
-                        ].includes(e.key)
-                      ) {
-                        commitParam(param, seeded[param.name]);
-                      }
-                    }}
-                    min={range.min}
-                    max={range.max}
-                    step="0.1"
-                    aria-label={`${formatParamName(param.name)} in millimetres`}
-                  />
-                  <input
                     type="number"
-                    className="w-[110px] min-w-0 shrink-0 rounded-lg border border-[#cbd0d6] bg-white px-2.5 py-1.5 text-sm"
+                    className="min-w-0 flex-1 rounded-lg border border-[#cbd0d6] bg-white px-2.5 py-1.5 text-sm"
                     value={draft}
                     onChange={(e) =>
                       setDraftValues((prev) => ({ ...prev, [param.name]: e.target.value }))

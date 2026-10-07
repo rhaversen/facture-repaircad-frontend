@@ -2,7 +2,7 @@ import axios from "axios";
 
 import { FORGE_BASE } from "@/lib/env";
 import { FORGE_MODEL, FORGE_REASONING_EFFORT } from "@/lib/config";
-import type { ForgeDesign } from "@/lib/types";
+import type { ForgeDesign, ForgeParameter } from "@/lib/types";
 import type { SolidDocument } from "@/lib/geometry/types";
 
 /*
@@ -33,7 +33,7 @@ export async function stopDesign(designId: string): Promise<void> {
 
 /** Merge-patch the design's parameter values: each sent key sets that param's
  *  user value, null clears it, keys not sent are untouched. */
-export async function patchParameters(designId: string, values: Record<string, number | null>) {
+export async function patchParameters(designId: string, values: Record<string, number | null>): Promise<{ ok: true; parameters: ForgeParameter[] }> {
   const res = await forgeAxios.patch(`/designs/${designId}/parameters`, {
     values,
   });

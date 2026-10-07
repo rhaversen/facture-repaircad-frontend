@@ -29,13 +29,15 @@ import type {
 /*
   Run → design persistence. A finished (or in-progress) calibration can be
   rehydrated from the persisted Forge design — GET /designs/:id/mesh re-renders
-  the stored model, and parameter state lives server-side in paramValues —
-  so a page refresh or run re-entry never pays for a new LLM generation.
-  A "choosing" entry instead stores the parallel initial variant ids, so a
-  refresh while the picker is open re-renders them (no LLM call) and reopens
-  the picker. Entries survive navigation and refresh in the same browser;
-  anything that fails to rehydrate (deleted design, other user's token) is
-  dropped and the flow falls back to full generation.
+  the stored model, and confirmed parameter values are PATCHed to Forge the
+  moment each one is confirmed (not batched at finish) — so a page refresh or
+  run re-entry never pays for a new LLM generation and never loses a
+  confirmed measurement. A "choosing" entry instead stores the parallel
+  initial variant ids, so a refresh while the picker is open re-renders them
+  (no LLM call) and reopens the picker. Entries survive navigation and
+  refresh in the same browser; anything that fails to rehydrate (deleted
+  design, other user's token) is dropped and the flow falls back to full
+  generation.
 */
 const DESIGN_STORE_KEY = "repaircad.forgeDesigns";
 
@@ -62,11 +64,16 @@ function readDesignStore(): Record<string, StoredDesignState> {
 
 /** Fetch a design's lowered geometry (stored parameter values, render
  *  tier baked by the backend) and mesh it locally in the geometry worker.
+ *  `values` optionally merges ephemeral overrides on top of the stored
+ *  parameter values for this request only — Forge stores nothing.
  *  Returns a scene Group, or null when nothing is renderable. */
-async function fetchMesh(designId: string): Promise<THREE_Group | null> {
-  const geometry = await getDesignGeometry(designId, { quality: MESH_QUALITY });
-  if (geometry === null) return null;
-  return meshGeometryToGroup(geometry);
+async function fetchMesh(designId: string, values?: Record<string, number>): Promise<THREE_Group | null> {
+    const geometry = await getDesignGeometry(designId, {
+        ...(values !== undefined ? { values } : {}),
+        quality: MESH_QUALITY,
+    });
+    if (geometry === null) return null;
+    return meshGeometryToGroup(geometry);
 }
 
 function writeDesignStore(store: Record<string, StoredDesignState>) {
@@ -309,49 +316,51 @@ export function useForge() {
 
       setStatusMessage("Rendering parameter previews…");
 
-      // One parameter at a time (its frames still render in parallel). Each
-      // sweep is published as soon as it completes so the UI can show it
-      // while the remaining parameters render in the background.
-      for (const [index, param] of pending.entries()) {
-        if (signal.aborted) return;
-        const { low, high } = deriveLowHigh(param);
-        const lowMid = midpoint(param.value, low);
-        const highMid = midpoint(param.value, high);
-        const values: number[] = [];
-        for (let s = 0; s < SWEEP_RENDER_STEPS; s++) {
-          values.push(
-            lowMid + ((highMid - lowMid) * s) / (SWEEP_RENDER_STEPS - 1),
+      /*
+        Every pending parameter previews at once — frames within a sweep and
+        sweeps across parameters fan out concurrently, and each sweep
+        publishes the moment its frames land so the UI shows parameters as
+        they finish instead of waiting for the serial pass through them all.
+      */
+      await Promise.all(
+        pending.map(async (param) => {
+          if (signal.aborted) return;
+          const { low, high } = deriveLowHigh(param);
+          const lowMid = midpoint(param.value, low);
+          const highMid = midpoint(param.value, high);
+          const values: number[] = [];
+          for (let s = 0; s < SWEEP_RENDER_STEPS; s++) {
+            values.push(
+              lowMid + ((highMid - lowMid) * s) / (SWEEP_RENDER_STEPS - 1),
+            );
+          }
+          const frames = await Promise.all(
+            values.map(async (value) => {
+              // Preview only: lowered geometry with the sweep value merged in,
+              // meshed in the client worker. Nothing is persisted server-side.
+              try {
+                const geometry = await getDesignGeometry(calibrationDesignId, {
+                  values: { [param.name]: value },
+                  quality: MESH_QUALITY,
+                });
+                return geometry === null ? null : meshGeometryToGroup(geometry);
+              } catch {
+                // A single failed frame (network hiccup, transient 5xx)
+                // shows as a gap; null frames are already tolerated by
+                // useActiveSweep, and null here keeps Promise.all from
+                // aborting the whole sweep batch.
+                return null;
+              }
+            }),
           );
-        }
-        setStatusMessage(
-          `Rendering previews for ${param.name} (${index + 1}/${pending.length})…`,
-        );
-        const frames = await Promise.all(
-          values.map(async (value) => {
-            // Preview only: lowered geometry with the sweep value merged in,
-            // meshed in the client worker. Nothing is persisted server-side.
-            try {
-              const geometry = await getDesignGeometry(calibrationDesignId, {
-                values: { [param.name]: value },
-                quality: MESH_QUALITY,
-              });
-              return geometry === null ? null : meshGeometryToGroup(geometry);
-            } catch {
-              // A single failed frame (network hiccup, transient 5xx)
-              // shows as a gap; null frames are already tolerated by
-              // useActiveSweep, and null here keeps Promise.all from
-              // aborting the whole sweep batch.
-              return null;
-            }
-          }),
-        );
-        if (signal.aborted) return;
-        const sweep: ParamSweep = {
-          values,
-          frames,
-        };
-        setParamSweeps((prev) => ({ ...prev, [param.name]: sweep }));
-      }
+          if (signal.aborted) return;
+          const sweep: ParamSweep = {
+            values,
+            frames,
+          };
+          setParamSweeps((prev) => ({ ...prev, [param.name]: sweep }));
+        }),
+      );
 
       setStatusMessage("");
       // The UI drives the rest: confirmParamValue() per parameter and
@@ -625,13 +634,103 @@ export function useForge() {
     [runCalibration, patchVariant, removeVariant, stopActiveVariants, acquireBusy, releaseBusy, setIterationsTracked],
   );
 
-  // Local-only confirmation: nothing is sent to Forge here. Values live in
-  // component state until finishCalibration batches them into one patch.
+  /*
+    Confirming a parameter is immediate: the value is persisted to Forge with
+    one merge PATCH (only this key is sent, so concurrent confirmations never
+    clobber each other), the live mesh re-renders with the new value right
+    away, and every dependent sweep rebuilds in parallel against the current
+    confirmed set. Network failures leave the optimistic local value in place;
+    OK still re-renders the final model from whatever Forge has stored.
+  */
   const confirmParamValue = useCallback(
     (name: string, value: number) => {
+      const currentDesignId = designId;
+      if (currentDesignId === null) {
+        // Design page variant: nothing to persist or re-render against.
+        setConfirmedValuesTracked((prev) => ({ ...prev, [name]: value }));
+        return;
+      }
       setConfirmedValuesTracked((prev) => ({ ...prev, [name]: value }));
+
+      // Fetches after every frame worker task so the sweep rebuild below
+      // always starts from a settled, current parameter set.
+      void (async () => {
+        let freshParams: ForgeParameter[] | null = null;
+        try {
+          const response = await patchParameters(currentDesignId, {
+            [name]: value,
+          });
+          freshParams = response.parameters;
+          setParameters(freshParams);
+        } catch {
+          // Keep the optimistic value; OK flushes server state on finish.
+          freshParams = null;
+        }
+
+        // Live model re-renders with just this override on top — patched
+        // values are already Forge-stored, past confirmations are inherited.
+        try {
+          const liveMesh = await fetchMesh(currentDesignId, { [name]: value });
+          setMesh(liveMesh);
+        } catch {
+          // Live frame loss is non-fatal; the mesh keeps showing its
+          // previous render.
+        }
+
+        // Sweep bounds re-derive from the freshly stored parameters when
+        // the PATCH succeeded (bounds shrink toward the confirmed value);
+        // otherwise the last known parameter list is the best available.
+        const source = freshParams ?? parameters;
+        void Promise.all(
+          Object.keys(confirmedValuesRef.current)
+            .map((confirmedName) =>
+              source.find((p) => p.name === confirmedName) ?? null,
+            )
+            .filter((p): p is ForgeParameter => p !== null)
+            .map(async (param) => {
+              const confirmedValue = confirmedValuesRef.current[param.name]!;
+              const overwritten: ForgeParameter = {
+                ...param,
+                value: confirmedValue,
+              };
+              const { low, high } = deriveLowHigh(overwritten);
+              const lowMid = midpoint(confirmedValue, low);
+              const highMid = midpoint(confirmedValue, high);
+              const values: number[] = [];
+              for (let s = 0; s < SWEEP_RENDER_STEPS; s++) {
+                values.push(
+                  lowMid + ((highMid - lowMid) * s) / (SWEEP_RENDER_STEPS - 1),
+                );
+              }
+              const frames = await Promise.all(
+                values.map(async (sweepValue) => {
+                  try {
+                    const geometry = await getDesignGeometry(
+                      currentDesignId,
+                      {
+                        values: { [param.name]: sweepValue },
+                        quality: MESH_QUALITY,
+                      },
+                    );
+                    return geometry === null
+                      ? null
+                      : meshGeometryToGroup(geometry);
+                  } catch {
+                    return null;
+                  }
+                }),
+              );
+              setParamSweeps((prev) => {
+                return {
+                  ...prev,
+                  [param.name]: { values, frames } satisfies ParamSweep,
+                };
+              });
+            }),
+        );
+      })();
     },
-    [setConfirmedValuesTracked],
+    [designId, parameters],
   );
 
   const finishCalibration = useCallback(
@@ -641,12 +740,8 @@ export function useForge() {
       setPhase("finalizing");
       setStatusMessage("Applying measurements and rendering the final model…");
       try {
-        // Every confirmed value is persisted here in a single merge patch —
-        // nothing was sent during calibration.
-        const values = confirmedValuesRef.current;
-        if (Object.keys(values).length > 0) {
-          await patchParameters(currentDesignId, values);
-        }
+        // Each parameter was already PATCHed eagerly on confirmation. This
+        // re-render only bakes the stored set into the final tier-1 mesh.
         const updatedMesh = await fetchMesh(currentDesignId);
         if (updatedMesh !== null) setMesh(updatedMesh);
         setPhase("ready");

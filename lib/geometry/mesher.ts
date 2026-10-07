@@ -3,7 +3,7 @@
  *  interpreter side of the executor (mirrors the backend's
  *  src/geometry/mesher.ts). */
 
-import { buildSolid, toMat4, type Solid } from "./solidOps";
+import { buildSolid, ensureManifold, toMat4, type Solid } from "./solidOps";
 import type { SolidDocument } from "./types";
 
 export interface MeshGroup {
@@ -47,8 +47,11 @@ export interface MeshPayload {
 export type MeshMode = "shells" | "union";
 
 /** Build the full mesh for one lowered SolidDocument. Resolution is baked
- *  into the solid nodes at lowering time — no fn arg needed here. */
-export function buildMesh(doc: SolidDocument, mode: MeshMode = "shells"): MeshResult {
+ *  into the solid nodes at lowering time — no fn arg needed here. Async
+ *  to bootstrap the raw wasm module (awaited by the worker wrapper;
+ *  no top-level await needed). */
+export async function buildMesh(doc: SolidDocument, mode: MeshMode = "shells"): Promise<MeshResult> {
+	await ensureManifold();
 	const positions: number[] = [];
 	const indices: number[] = [];
 	const groups: MeshGroup[] = [];
@@ -100,7 +103,7 @@ export function buildMesh(doc: SolidDocument, mode: MeshMode = "shells"): MeshRe
 	const tools: Array<{ solid: Solid; scope: (partId: string) => boolean }> = [];
 	for (const neg of negatives) {
 		const ancestry = neg.ancestry ?? [];
-		const solid = buildSolid(neg.solid).transform(toMat4(neg.matrix));
+		const solid = (await buildSolid(neg.solid)).transform(toMat4(neg.matrix));
 		tools.push({ solid, scope: (partId: string) => inToolScope(ancestry, partId) });
 	}
 	const toolsFor = (inst: { partId: string }): Solid[] => tools.filter((t) => t.scope(inst.partId)).map((t) => t.solid);
@@ -112,7 +115,7 @@ export function buildMesh(doc: SolidDocument, mode: MeshMode = "shells"): MeshRe
 		// stand for the group.
 		const groupSolids = new Map<string, { group: MeshGroup; solid: Solid | null }>();
 		for (const inst of positives) {
-			const s = buildSolid(inst.solid).transform(toMat4(inst.matrix));
+			const s = (await buildSolid(inst.solid)).transform(toMat4(inst.matrix));
 			let cut = s;
 			for (const tool of toolsFor(inst)) {
 				cut = cut.subtract(tool);
@@ -140,7 +143,7 @@ export function buildMesh(doc: SolidDocument, mode: MeshMode = "shells"): MeshRe
 		// shell — the per-part identity the frontend's drill-down keys on.
 		const cuts: Array<{ group: MeshGroup; cut: Solid }> = [];
 		for (const inst of positives) {
-			const s = buildSolid(inst.solid).transform(toMat4(inst.matrix));
+			const s = (await buildSolid(inst.solid)).transform(toMat4(inst.matrix));
 			let cut = s;
 			for (const tool of toolsFor(inst)) {
 				cut = cut.subtract(tool);

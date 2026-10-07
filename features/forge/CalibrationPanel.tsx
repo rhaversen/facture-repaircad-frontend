@@ -79,15 +79,6 @@ export default function CalibrationPanel({
     <div className="flex min-h-0 flex-col gap-4 rounded-xl border border-line p-4.5 pr-5 lg:w-[380px] lg:shrink-0">
       <div className="lg:shrink-0">
         <h2 className="mb-1.5 text-lg">Calibrate the model</h2>
-        <p className="mt-2.5 text-[13px] text-[#8a93a1]">
-          All parameter previews render in parallel — a parameter is sweepable
-          as soon as its preview is ready. Use the “▶” preview button to sweep
-          it in the viewport, measure your real object, then set the value.
-          Values apply immediately when you release the slider, or press
-          Enter/leave the field after typing: the change is saved to Forge and
-          the model re-renders straight away, and every sweep rebuilds against
-          the values set so far.
-        </p>
       </div>
 
       <div className="flex min-h-0 flex-col gap-3.5 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain">

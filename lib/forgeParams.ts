@@ -15,9 +15,10 @@ export function deriveSliderRange(param: ForgeParameter): {
   return { min: low, max: Math.max(high, low + 0.1) };
 }
 
-/** True when a parameter is a boolean flag stored as a 0/1 toggle. */
+/** True when a parameter is a boolean flag stored as a 0/1 toggle — the
+ *  backend flags these via a [0, 1] range; there is no explicit type. */
 export function isBoolean(param: ForgeParameter): boolean {
-  return param.min === 0 && param.max === 1 && param.step === 1;
+  return param.min === 0 && param.max === 1;
 }
 
 /** "wall_thickness" → "Wall Thickness". */

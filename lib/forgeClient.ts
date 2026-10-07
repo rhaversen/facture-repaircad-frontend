@@ -2,7 +2,7 @@ import axios from "axios";
 
 import { FORGE_BASE } from "@/lib/env";
 import { FORGE_MODEL, FORGE_REASONING_EFFORT } from "@/lib/config";
-import type { ForgeDesign } from "@/lib/types";
+import type { ForgeDesign, ForgeParameter } from "@/lib/types";
 import type { SolidDocument } from "@/lib/geometry/types";
 
 /*
@@ -33,7 +33,7 @@ export async function stopDesign(designId: string): Promise<void> {
 
 /** Merge-patch the design's parameter values: each sent key sets that param's
  *  user value, null clears it, keys not sent are untouched. */
-export async function patchParameters(designId: string, values: Record<string, number | null>) {
+export async function patchParameters(designId: string, values: Record<string, number | null>): Promise<{ ok: true; parameters: ForgeParameter[] }> {
   const res = await forgeAxios.patch(`/designs/${designId}/parameters`, {
     values,
   });
@@ -77,13 +77,10 @@ export async function getDesignGeometry(
     quality?: "draft" | "standard" | "fine";
   },
 ): Promise<DesignGeometry | null> {
-  const params = new URLSearchParams();
-  for (const [name, value] of Object.entries(opts?.values ?? {})) {
-    params.append(`values[${name}]`, String(value));
-  }
-  params.set("quality", opts?.quality ?? "draft");
-  const res = await forgeAxios.get(`/designs/${designId}/geometry`, {
-    params,
+  const res = await forgeAxios.post(`/designs/${designId}/geometry`, {
+    values: opts?.values,
+    quality: opts?.quality ?? "draft",
+  }, {
     // 422 = compile failure → treated as "nothing renderable" below.
     validateStatus: (s) => s === 200 || s === 204 || s === 422,
   });

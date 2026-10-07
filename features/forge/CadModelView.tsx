@@ -365,6 +365,13 @@ export default function CadModelView({
               onPreviewSweep={handlePreviewSweep}
               onFinish={() => finishCalibration({ runId })}
             />
+
+            <RefinementChat
+              refinementRunId={refinementRunId}
+              refinementInitializing={refinementInitializing}
+              refinementError={refinementError}
+              intro="Ask to change the model, clarify a measurement, or inspect the current repair design."
+            />
           </div>
         ) : (
           <div className="flex min-h-[600px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
@@ -415,13 +422,6 @@ export default function CadModelView({
                 </div>
               )}
             </section>
-
-            <RefinementChat
-              refinementRunId={refinementRunId}
-              refinementInitializing={refinementInitializing}
-              refinementError={refinementError}
-              intro="Ask to change the model, clarify a measurement, or inspect the current repair design."
-            />
           </div>
         )}
 
@@ -486,14 +486,13 @@ function RefinementChat({
   intro: string;
 }) {
   /*
-    On desktop the aside takes an even half of the phase row, stretching to
-    the row's height (the row itself has a min-height floor, so the
-    transcript always keeps a usable area); the model column flexes to the
-    other half. When the row is stacked (narrow screens) the aside keeps a
-    fixed share of the viewport so the iframe still has a definite height.
+    Sits as a third column next to the canvas and the parameter panel on wide
+    screens, recording to the row's height; the calibration panel fixes the
+    columns' width. When stacked (narrow screens) the aside keeps a fixed
+    share of the viewport so the iframe still has a definite height.
   */
   return (
-    <aside className="flex h-[75dvh] min-h-[420px] min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-white lg:h-auto lg:w-1/2 lg:min-h-[420px] lg:shrink-0 lg:self-stretch">
+    <aside className="flex h-[75dvh] min-h-[420px] min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-white lg:h-auto lg:w-[380px] lg:min-h-[420px] lg:shrink-0 lg:self-stretch">
       <div className="shrink-0 border-b border-line-soft px-5 py-4.5">
         <h2 className="mb-1.5 text-lg">Refine your repair</h2>
         <p className="m-0 text-sm leading-[1.45] text-muted-2">{intro}</p>

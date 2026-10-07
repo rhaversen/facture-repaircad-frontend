@@ -39,6 +39,7 @@ vi.mock("@/lib/forgeClient", async (importOriginal) => {
     ...actual,
     createDesign: vi.fn(),
     duplicateDesign: vi.fn(),
+    patchParameters: vi.fn(),
     stopDesign: vi.fn(),
     sendDesignMessage: vi.fn(),
     getDesign: vi.fn(),

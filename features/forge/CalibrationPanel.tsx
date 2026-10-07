@@ -27,10 +27,11 @@ export default function CalibrationPanel({
   onFinish,
 }: CalibrationPanelProps) {
   /*
-    Values stay local while editing — a slider commit fires when the drag
-    ends, a typed number commits on blur or Enter, so partial input never
-    lands in the state mid-editing. Nothing reaches Forge until the OK button
-    batches every confirmed value into one patch.
+    Values stay local only while editing — a slider commit fires when the
+    drag ends, a typed number commits on blur or Enter, so partial input
+    never lands in the state mid-editing. The commit itself is immediate:
+    the value is PATCHed to Forge and the model re-renders right away, and
+    OK just bakes the final render.
   */
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
 
@@ -79,12 +80,13 @@ export default function CalibrationPanel({
       <div className="lg:shrink-0">
         <h2 className="mb-1.5 text-lg">Calibrate the model</h2>
         <p className="mt-2.5 text-[13px] text-[#8a93a1]">
-          Previews render one parameter at a time — a parameter is sweepable as
-          soon as its preview is ready. Use the “▶” preview button to sweep it
-          in the viewport, measure your real object, then set the value. Values
-          apply automatically when you release the slider, or press Enter/leave
-          the field after typing. Setting one only re-renders that parameter;
-          the rest keep the defaults.
+          All parameter previews render in parallel — a parameter is sweepable
+          as soon as its preview is ready. Use the “▶” preview button to sweep
+          it in the viewport, measure your real object, then set the value.
+          Values apply immediately when you release the slider, or press
+          Enter/leave the field after typing: the change is saved to Forge and
+          the model re-renders straight away, and every sweep rebuilds against
+          the values set so far.
         </p>
       </div>
 

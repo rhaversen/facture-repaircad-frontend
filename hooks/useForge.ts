@@ -638,9 +638,12 @@ export function useForge() {
     Confirming a parameter is immediate: the value is persisted to Forge with
     one merge PATCH (only this key is sent, so concurrent confirmations never
     clobber each other), the live mesh re-renders with the new value right
-    away, and every dependent sweep rebuilds in parallel against the current
-    confirmed set. Network failures leave the optimistic local value in place;
-    OK still re-renders the final model from whatever Forge has stored.
+    away, and every calibratable parameter's sweep rebuilds in parallel
+    against the current confirmed set — including parameters the user has
+    not confirmed yet, whose previews would otherwise keep showing the model
+    from before the change. Network failures leave the optimistic local
+    value in place; OK still re-renders the final model from whatever Forge
+    has stored.
   */
   const confirmParamValue = useCallback(
     (name: string, value: number) => {
@@ -681,21 +684,22 @@ export function useForge() {
         // the PATCH succeeded (bounds shrink toward the confirmed value);
         // otherwise the last known parameter list is the best available.
         const source = freshParams ?? parameters;
+        const confirmed = confirmedValuesRef.current;
         void Promise.all(
-          Object.keys(confirmedValuesRef.current)
-            .map((confirmedName) =>
-              source.find((p) => p.name === confirmedName) ?? null,
-            )
-            .filter((p): p is ForgeParameter => p !== null)
+          source
+            .filter((p) => isCalibratable(p))
             .map(async (param) => {
-              const confirmedValue = confirmedValuesRef.current[param.name]!;
+              const confirmedValue = confirmed[param.name];
+              // Confirmed parameters sweep around their set value;
+              // unconfirmed ones sweep around the spec default.
+              const baseValue = confirmedValue ?? param.value;
               const overwritten: ForgeParameter = {
                 ...param,
-                value: confirmedValue,
+                value: baseValue,
               };
               const { low, high } = deriveLowHigh(overwritten);
-              const lowMid = midpoint(confirmedValue, low);
-              const highMid = midpoint(confirmedValue, high);
+              const lowMid = midpoint(baseValue, low);
+              const highMid = midpoint(baseValue, high);
               const values: number[] = [];
               for (let s = 0; s < SWEEP_RENDER_STEPS; s++) {
                 values.push(
@@ -708,6 +712,10 @@ export function useForge() {
                     const geometry = await getDesignGeometry(
                       currentDesignId,
                       {
+                        // Explicit per-sweep values; patched but
+                        // unconfirmed params inherit Forge's stored value
+                        // (the patch above at the time of writing), so
+                        // only the swept param is overridden per frame.
                         values: { [param.name]: sweepValue },
                         quality: MESH_QUALITY,
                       },

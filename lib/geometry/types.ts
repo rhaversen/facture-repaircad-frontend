@@ -27,6 +27,7 @@ export type SolidNode =
 	| { kind: "cylinder"; r1: number; r2: number; h: number; segments: number }
 	| { kind: "sphere"; r: number; segments: number }
 	| { kind: "hull"; points: readonly Vec3[]; r: number; segments: number }
+	| { kind: "hull-chain"; points: readonly Vec3[]; r: number; segments: number }
 	| { kind: "translate"; offset: Vec3; node: SolidNode }
 	| { kind: "rotate"; rotDeg: readonly [number, number, number]; node: SolidNode }
 	| { kind: "add" | "subtract" | "intersect"; a: SolidNode; b: SolidNode };

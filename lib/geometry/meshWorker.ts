@@ -5,8 +5,8 @@
  *
  *  The entry deliberately has NO static imports and NO init handshake,
  *  mirroring the backend's src/rendering/meshWorker.ts in spirit but
- *  guarding against the one browser-specific hazard: the manifoldCAD
- *  entry module top-level-awaits WASM instantiation. Static-importing it
+ *  guarding against the one browser-specific hazard: the raw manifold
+ *  wasm boot happens on FIRST call, inside buildSolid's job-time await —
  *  delays worker evaluation; if that stalls (bundler dev chunk loading
  *  inside a module worker), the port queue stays paused with no error
  *  event and the job hangs. Instead the bare entry evaluates instantly,
@@ -38,7 +38,7 @@ self.addEventListener("message", (ev: MessageEvent<MeshRequestIn>) => {
 	void (async () => {
 		try {
 			const { buildMesh } = await import("./mesher");
-			const mesh = buildMesh(msg.geometry, msg.mode ?? "shells");
+			const mesh = await buildMesh(msg.geometry, msg.mode ?? "shells");
 			post(
 				{
 					mesh: {

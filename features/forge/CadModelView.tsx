@@ -28,6 +28,14 @@ import CalibrationPanel, {
 interface CadModelViewProps {
   handoffs: string[];
   runId: string | null;
+  /*
+    True when the run went through its whole pipeline inside this browsing
+    session and the user came here straight from the chat: the models then
+    generate without an extra click. A run opened straight from the runs
+    list keeps the manual Generate gate (browsing would otherwise generate
+    three designs per opened run).
+  */
+  shouldAutoGenerate?: boolean;
   onBack: () => void;
   onNewRun: () => void;
   onViewRuns: () => void;
@@ -45,6 +53,7 @@ interface CadModelViewProps {
 export default function CadModelView({
   handoffs,
   runId,
+  shouldAutoGenerate = false,
   onBack,
   onNewRun,
   onViewRuns,
@@ -75,8 +84,8 @@ export default function CadModelView({
 
   /*
     Entry check: render a persisted design/variant set immediately (no LLM
-    call) and never start a generation automatically — when nothing exists
-    the user must press Generate.
+    call). When nothing is persisted, a live run generates the models itself
+    while a browsed run keeps the manual Generate gate.
   */
   const { checking: entryChecking, missing: entryMissing } = useDesignExists({
     phase,
@@ -84,6 +93,8 @@ export default function CadModelView({
     reset,
     runId,
     handoffs,
+    autoGenerate: shouldAutoGenerate,
+    generate,
   });
 
   /*

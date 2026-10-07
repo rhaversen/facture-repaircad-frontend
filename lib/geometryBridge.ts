@@ -33,7 +33,7 @@ export function meshPayloadToGroup(payload: MeshPayload): THREE_Group {
 		);
 		// Creased normals keep hard edges crisp while staying smooth on
 		// curves. Returns a non-indexed geometry with per-corner normals.
-		const creased = toCreasedNormals(geometry, THREE.MathUtils.degToRad(50));
+		const creased = toCreasedNormals(geometry, THREE.MathUtils.degToRad(10));
 		geometry.dispose();
 		const color = /^#[0-9a-fA-F]{6}$/.test(g.color)
 			? new THREE.Color(g.color)

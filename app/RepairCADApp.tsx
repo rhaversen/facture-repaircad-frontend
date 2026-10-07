@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import RunList from "@/features/runs/RunList";
 import DescribeRepair from "@/features/intake/DescribeRepair";
@@ -83,6 +83,25 @@ export default function RepairCADApp() {
 
   const [requestedScreen, setScreen] = useState<number>(RUN_LIST);
 
+  /*
+    Run provenance for auto-generate: a run created in this browser session
+    (bootstrap of an empty workspace, the New-run button, or reaching the
+    chat normally) may auto-generate its CAD models when its handoff lands —
+    the user is watching the run live, so no extra Generate click is needed.
+    Runs opened from the runs list are never registered, keeping the manual
+    Generate gate there (each browsed run would otherwise auto-generate
+    three designs on entry).
+  */
+  const [liveRunIds, setLiveRunIds] = useState<Set<string>>(new Set());
+  const registerLiveRun = useCallback((id: string) => {
+    setLiveRunIds((prev) => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+  }, []);
+
   const [s2NodeIdValue, setS2NodeIdValue] = useState<string | null>(null);
   useEffect(() => {
     if (!authChecked || s2NodeIdValue !== null) return;
@@ -101,6 +120,7 @@ export default function RepairCADApp() {
     run?.currentNodeId === s2NodeIdValue;
 
   const [handoffDismissed, setHandoffDismissed] = useState(false);
+
   const screen = deriveScreen({
     run,
     messages,
@@ -147,13 +167,16 @@ export default function RepairCADApp() {
     listRunsRef.current().then((existing) => {
       if (existing !== null && existing.length === 0) {
         createRunRef.current()
-          .then(() => setScreen(1))
+          .then((created) => {
+            registerLiveRun(created._id);
+            setScreen(1);
+          })
           .catch(() => {
             // Error handled in hook; the empty list stays visible.
           });
       }
     });
-  }, [authChecked]);
+  }, [authChecked, registerLiveRun]);
 
   useEffect(() => {
     if (screen === CHAT_SCREEN) reconcileRunRef.current();
@@ -197,7 +220,8 @@ export default function RepairCADApp() {
 
   async function handleCreateRun() {
     try {
-      await createRun();
+      const created = await createRun();
+      registerLiveRun(created._id);
       setScreen(1);
     } catch {
       // Error handled in hook; stay on the list.
@@ -205,6 +229,15 @@ export default function RepairCADApp() {
   }
 
   async function handleSelectRun(selectedRunId: string) {
+    // A run re-entered from the list is browsed, not live — any still-
+    // missing models then need the manual Generate button, and an empty
+    // run must not fire three designs just because it was opened.
+    setLiveRunIds((prev) => {
+      if (!prev.has(selectedRunId)) return prev;
+      const next = new Set(prev);
+      next.delete(selectedRunId);
+      return next;
+    });
     try {
       const {
         messages: loadedMessages,
@@ -296,6 +329,7 @@ export default function RepairCADApp() {
   }
 
   const activeRunId = runId ?? run?._id ?? null;
+  const shouldAutoGenerate = activeRunId !== null && liveRunIds.has(activeRunId);
 
   if (screen === RUN_LIST) {
     return (
@@ -452,6 +486,7 @@ export default function RepairCADApp() {
       <CadModelView
         handoffs={handoffs}
         runId={activeRunId}
+        shouldAutoGenerate={shouldAutoGenerate}
         onBack={() => {
           setHandoffDismissed(true);
           setScreen(CHAT_SCREEN);

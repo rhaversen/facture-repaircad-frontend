@@ -28,6 +28,14 @@ import CalibrationPanel, {
 interface CadModelViewProps {
   handoffs: string[];
   runId: string | null;
+  /*
+    True when the run went through its whole pipeline inside this browsing
+    session and the user came here straight from the chat: the models then
+    generate without an extra click. A run opened straight from the runs
+    list keeps the manual Generate gate (browsing would otherwise generate
+    three designs per opened run).
+  */
+  shouldAutoGenerate?: boolean;
   onBack: () => void;
   onNewRun: () => void;
   onViewRuns: () => void;
@@ -45,6 +53,7 @@ interface CadModelViewProps {
 export default function CadModelView({
   handoffs,
   runId,
+  shouldAutoGenerate = false,
   onBack,
   onNewRun,
   onViewRuns,
@@ -65,7 +74,7 @@ export default function CadModelView({
     confirmedValues,
     generate,
     rehydrate,
-    duplicateAndRefine,
+    refineDesign,
     chooseDesign,
     confirmParamValue,
     finishCalibration,
@@ -75,8 +84,8 @@ export default function CadModelView({
 
   /*
     Entry check: render a persisted design/variant set immediately (no LLM
-    call) and never start a generation automatically — when nothing exists
-    the user must press Generate.
+    call). When nothing is persisted, a live run generates the models itself
+    while a browsed run keeps the manual Generate gate.
   */
   const { checking: entryChecking, missing: entryMissing } = useDesignExists({
     phase,
@@ -84,16 +93,15 @@ export default function CadModelView({
     reset,
     runId,
     handoffs,
+    autoGenerate: shouldAutoGenerate,
+    generate,
   });
 
   /*
     Second Flow conversation used for iterative CAD refinement. It is
-    separate from the initial RepairCAD reasoning run. Once Forge has created
-    or rehydrated a design, the refinement run receives both the provisional
-    requirements document and this Forge design's ID. It must also be
-    reachable during the "choosing" phase — the chat is the single place the
-    user talks to the assistant while picking between candidates; designId
-    stays null while choosing, so the picker's source design is passed.
+    separate from the initial RepairCAD reasoning run. The chat lives on the
+    design page only, so the refinement run bootstraps once a design has
+    been picked — while the picker is open there is nothing to refine yet.
   */
   const {
     runId: refinementRunId,
@@ -107,15 +115,14 @@ export default function CadModelView({
   useEffect(() => {
     const bootstrapHandoff = selectedHandoff ?? handoffs[0] ?? "";
     if (!bootstrapHandoff.trim()) return;
-    const effectiveDesignId = designId ?? variants[0]?.designId ?? null;
-    if (!effectiveDesignId) return;
+    if (designId === null) return;
     initializeRefinement({
       handoffMarkdown: bootstrapHandoff,
-      designId: effectiveDesignId,
+      designId,
     }).catch((err) => {
       console.error("Could not start refinement conversation:", err);
     });
-  }, [selectedHandoff, handoffs, designId, variants, initializeRefinement]);
+  }, [selectedHandoff, handoffs, designId, initializeRefinement]);
 
   // Keep the refinement run synchronized so forge_instruction / final_guidance
   // produced by R3 becomes visible to this component.
@@ -128,67 +135,25 @@ export default function CadModelView({
 
   const lastProcessedForgeInstructionRef = useRef<string | null>(null);
 
-  // Candidate the user last highlighted in the picker; chat-driven feedback
-  // rounds target it.
-  const lastSelectedDesignIdRef = useRef<string | null>(null);
-  const [pickerSelectedId, setPickerSelectedId] = useState<string | null>(null);
-  const [iteratingFeedback, setIteratingFeedback] = useState(false);
-
-  /*
-    When R3 produces a new Forge instruction, apply it to the Forge design.
-    The carried-forward design is never re-sent: every round duplicating it
-    into three copies which receive the feedback (both while "choosing" and
-    when a design is calibrated/ready), the user then picks one of the three
-    copies to carry into the next round.
-  */
+  // The chat lives only on the design page: every refinement targets the
+  // current design, single-duplicate, linearly. While "choosing" there is no
+  // design to refine and no chat is rendered.
   useEffect(() => {
+    if (phase !== "ready" && phase !== "calibrating") return;
     const instruction = refinementRunningDoc?.forge_instruction?.trim();
-    if (!instruction || busy || iteratingFeedback) return;
-    if (phase !== "ready" && !(phase === "choosing" && variants.length > 0)) {
-      return;
-    }
-    // Do not send the same R3 output to Forge more than once. Mark it before
-    // starting the async request so polling cannot start the same turn again
-    // while the first request is in flight.
+    if (!instruction || busy) return;
     if (lastProcessedForgeInstructionRef.current === instruction) return;
+    // Marked before dispatch so a polling doc cannot start the same round
+    // twice; a failed round surfaces in the error phase, and a corrected
+    // instruction (different text) triggers cleanly.
     lastProcessedForgeInstructionRef.current = instruction;
-
-    // A feedback instruction always iterates the currently relevant design —
-    // the picker's highlighted candidate while choosing, otherwise the live
-    // design.
-    const sourceDesignId =
-      pickerSelectedId ??
-      lastSelectedDesignIdRef.current ??
-      designId ??
-      variants[0]?.designId ??
-      null;
-    if (sourceDesignId === null) {
-      lastProcessedForgeInstructionRef.current = null;
-      return;
-    }
-    setIteratingFeedback(true);
-    // The new round replaces the candidates — nothing stays selected.
-    lastSelectedDesignIdRef.current = null;
-    setPickerSelectedId(null);
-    duplicateAndRefine({
+    refineDesign({
       feedback: instruction,
-      sourceDesignId,
       runId,
-      variantCount: 3,
-    }).finally(() => {
-      setIteratingFeedback(false);
+    }).catch((err) => {
+      console.error("Forge refinement failed:", err);
     });
-  }, [
-    refinementRunningDoc,
-    phase,
-    variants,
-    iteratingFeedback,
-    busy,
-    runId,
-    pickerSelectedId,
-    designId,
-    duplicateAndRefine,
-  ]);
+  }, [phase, busy, refinementRunningDoc, runId, refineDesign]);
 
   // Calibration input is awaiting the user exactly during the calibrating phase.
   const awaitingInput = phase === "calibrating";
@@ -335,70 +300,29 @@ export default function CadModelView({
             </div>
           </div>
         ) : phase === "choosing" ? (
-          <div className="flex flex-col gap-5">
-            <div className="flex flex-col gap-6 lg:flex-row lg:items-stretch">
-              <section className="min-h-0 min-w-0 flex-1">
-                <div className="mb-6">
-                  <h1 className="text-[30px]">Choose a rough shape for the design</h1>
-                  <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
-                    Several candidates were generated from your repair handoff.
-                    Pick the one to continue with. This step is only about getting
-                    the right <strong>shape</strong> — the next step will ask you
-                    for accurate measurements, so no need to judge the exact
-                    dimensions here.
-                  </p>
-                </div>
-                <DesignPicker
-                  key={pickerKey}
-                  variants={variants}
-                  iterations={iterations}
-                  onSelect={(selectedDesignId) => {
-                    lastSelectedDesignIdRef.current = selectedDesignId;
-                    setPickerSelectedId(selectedDesignId);
-                  }}
-                />
-              </section>
-
-              <RefinementChat
-                refinementRunId={refinementRunId}
-                refinementInitializing={refinementInitializing}
-                refinementError={refinementError}
-                disabled={pickerSelectedId === null}
-                disabledMessage="Select a design first…"
-                intro="Ask to change the model, clarify a measurement, or pick apart a candidate. Messages here steer the Forge design. This step is about the right shape only — accurate measurements come in the next step."
-              />
-            </div>
-
-            <div className="flex w-full shrink-0 flex-col items-start gap-2.5 rounded-xl border border-line-soft bg-surface p-5">
-              {(() => {
-                const chosenVariant = variants.find(
-                  (v) => v.designId === pickerSelectedId,
-                );
-                const chosenUnfinished =
-                  chosenVariant !== undefined &&
-                  (chosenVariant.mesh === null || chosenVariant.status !== "ready");
-                return (
-                  <button
-                    type="button"
-                    className="w-full bg-brand px-5 py-3 text-[15px] font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] hover:bg-brand-dark disabled:cursor-not-allowed disabled:bg-[#b9bec7]"
-                    disabled={pickerSelectedId === null || chosenUnfinished}
-                    onClick={() => chooseDesign(pickerSelectedId)}
-                  >
-                    {pickerSelectedId === null
-                      ? "Select a design above to continue"
-                      : chosenUnfinished
-                        ? "Design is still generating…"
-                        : `I'm happy with Design ${variants.findIndex((v) => v.designId === pickerSelectedId) + 1}`}
-                  </button>
-                );
-              })()}
-              <p className="mt-0 text-[13px] text-[#8a93a1]">
-                Continues to calibration on the design you pick; the other
-                candidates are discarded.
+          <section className="min-h-0 min-w-0 flex-1">
+            <div className="mb-6">
+              <h1 className="text-[30px]">Choose a rough shape for the design</h1>
+              <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
+                Several candidates were generated from your repair handoff.
+                Pick the one to continue with. This step is only about getting
+                the right <strong>shape</strong> — the next step will ask you
+                for accurate measurements, so no need to judge the exact
+                dimensions here.
               </p>
             </div>
-          </div>
-        ) : awaitingInput ? (
+            <DesignPicker
+              key={pickerKey}
+              variants={variants}
+              iterations={iterations}
+              onSelect={(selectedDesignId) => {
+                // Instant commit: the selected candidate continues into
+                // calibration right away; unused candidates are stopped.
+                chooseDesign(selectedDesignId);
+              }}
+            />
+          </section>
+        ) : phase === "calibrating" ? (
           <div className="flex min-h-[600px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
             <div className="relative flex min-h-[420px] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white max-lg:h-[560px]">
               <CadCanvas generating={isLoading} fitKey={designId} fitMesh={mesh}>
@@ -555,15 +479,11 @@ function RefinementChat({
   refinementInitializing,
   refinementError,
   intro,
-  disabled = false,
-  disabledMessage,
 }: {
   refinementRunId: string | null;
   refinementInitializing: boolean;
   refinementError: string;
   intro: string;
-  disabled?: boolean;
-  disabledMessage?: string;
 }) {
   /*
     On desktop the aside takes an even half of the phase row, stretching to
@@ -594,8 +514,6 @@ function RefinementChat({
           <FlowChatFrame
             runId={refinementRunId}
             title="CAD refinement"
-            disabled={disabled}
-            disabledMessage={disabledMessage}
           />
         </div>
       )}

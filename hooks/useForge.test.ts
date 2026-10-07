@@ -110,13 +110,11 @@ function mockSuccessfulGeneration() {
   });
 }
 
-/** Wire mocks for a successful duplicate-3 feedback round. */
+/** Wire mocks for a successful single-duplicate refinement round. */
 function mockSuccessfulFeedbackRound() {
-  let dupCalls = 0;
-  vi.mocked(forgeClient.duplicateDesign).mockImplementation(async () => {
-    dupCalls++;
-    return DUPLICATE_IDS[(dupCalls - 1) % DUPLICATE_IDS.length];
-  });
+  vi.mocked(forgeClient.duplicateDesign).mockImplementation(
+    async () => DUPLICATE_IDS[vi.mocked(forgeClient.duplicateDesign).mock.calls.length - 1],
+  );
   vi.mocked(forgeClient.sendDesignMessage).mockResolvedValue(undefined);
   vi.mocked(forgeClient.subscribeDesignStream).mockImplementation(async function* () {
     yield meshEvent();
@@ -449,7 +447,7 @@ describe("useForge picker SSE handling", () => {
   });
 });
 
-describe("useForge duplicate-3 feedback rounds", () => {
+describe("useForge single-duplicate refinement rounds", () => {
   beforeEach(() => {
     window.localStorage.clear();
     vi.clearAllMocks();
@@ -461,9 +459,10 @@ describe("useForge duplicate-3 feedback rounds", () => {
     vi.restoreAllMocks();
   });
 
-  /* Full round: pick from the initial trio, then drive one feedback round
-     (three duplicates, no message to the source) and pick again. The render
-     hook stays owned by the caller so state updates stay visible. */
+  /* Full round: pick from the initial trio, then drive one refinement round
+     (one duplicate, feedback only to the copy) and let the copy become the
+     new current design. The render hook stays owned by the caller so state
+     updates stay visible. */
   async function runInitialGenerationAndPick(
     result: { current: ReturnType<typeof useForge> },
     runId: string,
@@ -484,65 +483,50 @@ describe("useForge duplicate-3 feedback rounds", () => {
     );
   }
 
-  it("duplicates the picked design into three copies and never re-sends to the source", async () => {
+  it("duplicates the current design once and sends the feedback only to the copy", async () => {
     const { result } = renderHook(() => useForge());
-    await runInitialGenerationAndPick(result, "run-dup-1", "id-2");
+    await runInitialGenerationAndPick(result, "run-refine-1", "id-2");
 
     let parked!: Promise<void>;
     act(() => {
-      parked = result.current.duplicateAndRefine({
+      parked = result.current.refineDesign({
         feedback: "round two feedback",
-        sourceDesignId: "id-2",
-        runId: "run-dup-1",
+        runId: "run-refine-1",
       });
     });
-    await poll(() => result.current.variants.length === 3);
-    await poll(() => result.current.phase === "choosing");
-    act(() => {
-      result.current.chooseDesign("dup-2");
-    });
-    await parked;
     await poll(
       () =>
         result.current.phase === "ready" || result.current.phase === "error",
     );
+    await parked;
 
-    expect(forgeClient.duplicateDesign).toHaveBeenCalledTimes(3);
+    expect(forgeClient.duplicateDesign).toHaveBeenCalledTimes(1);
     expect(forgeClient.duplicateDesign).toHaveBeenCalledWith("id-2");
-    // Three feedback messages, one per duplicate, none to the carried-forward
-    // source.
+    // The feedback went to the copy, never back to the carried-forward
+    // source design.
     const sent = vi.mocked(forgeClient.sendDesignMessage).mock.calls;
-    const dupMsgs = sent.filter(([designId]) => DUPLICATE_IDS.includes(designId));
-    expect(dupMsgs).toHaveLength(3);
-    for (const [designId, message] of dupMsgs) {
-      expect(message).toBe("round two feedback");
-      expect(IDS).not.toContain(designId);
-    }
-    expect(result.current.designId).toBe("dup-2");
+    expect(sent).toHaveLength(4); // 3 initial handoffs + 1 refinement copy
+    expect(sent[3][0]).toBe(DUPLICATE_IDS[0]);
+    expect(sent[3][1]).toBe("round two feedback");
+    expect(result.current.designId).toBe(DUPLICATE_IDS[0]);
   });
 
-  it("records each round as an iteration lineage entry with the picked design", async () => {
+  it("records each round as a linear iteration lineage entry with the copy as picked", async () => {
     const { result } = renderHook(() => useForge());
-    await runInitialGenerationAndPick(result, "run-dup-2", "id-1");
+    await runInitialGenerationAndPick(result, "run-refine-2", "id-1");
 
     let parked!: Promise<void>;
     act(() => {
-      parked = result.current.duplicateAndRefine({
+      parked = result.current.refineDesign({
         feedback: "make it sturdier",
-        sourceDesignId: "id-1",
-        runId: "run-dup-2",
+        runId: "run-refine-2",
       });
     });
-    await poll(() => result.current.variants.length === 3);
-    await poll(() => result.current.phase === "choosing");
-    act(() => {
-      result.current.chooseDesign("dup-3");
-    });
-    await parked;
     await poll(
       () =>
         result.current.phase === "ready" || result.current.phase === "error",
     );
+    await parked;
 
     expect(result.current.iterations).toHaveLength(2);
     const [firstRound, secondRound] = result.current.iterations;
@@ -553,18 +537,34 @@ describe("useForge duplicate-3 feedback rounds", () => {
     expect(secondRound.round).toBe(2);
     expect(secondRound.feedback).toBe("make it sturdier");
     expect(secondRound.sourceDesignId).toBe("id-1");
-    expect(secondRound.variantIds).toEqual(DUPLICATE_IDS);
-    expect(secondRound.pickedDesignId).toBe("dup-3");
+    expect(secondRound.variantIds).toEqual([DUPLICATE_IDS[0]]);
+    expect(secondRound.pickedDesignId).toBe(DUPLICATE_IDS[0]);
 
-    const stored = loadStoredDesignState("run-dup-2");
+    const stored = loadStoredDesignState("run-refine-2");
     expect(stored?.iterations).toEqual(result.current.iterations);
+    expect(stored?.designId).toBe(DUPLICATE_IDS[0]);
   });
 
-  it("stills loads legacy store entries with no iterations key", async () => {
+  it("does not refine while there is no current design", async () => {
+    const { result } = renderHook(() => useForge());
+
+    await act(async () => {
+      await result.current.refineDesign({
+        feedback: "should be skipped",
+        runId: "run-refine-3",
+      });
+    });
+
+    expect(forgeClient.duplicateDesign).not.toHaveBeenCalled();
+    expect(forgeClient.sendDesignMessage).not.toHaveBeenCalled();
+    expect(result.current.phase).toBe("idle");
+  });
+
+  it("loads legacy store entries with no iterations key", async () => {
     window.localStorage.setItem(
       "repaircad.forgeDesigns",
       JSON.stringify({
-        "run-dup-3": {
+        "run-refine-4": {
           designId: "id-2",
           phase: "ready",
           selectedHandoff: "handoff-two",
@@ -576,7 +576,7 @@ describe("useForge duplicate-3 feedback rounds", () => {
     let restored = false;
     await act(async () => {
       restored = await result.current.rehydrate({
-        runId: "run-dup-3",
+        runId: "run-refine-4",
         handoffs: HANDOFFS,
       });
     });
@@ -586,7 +586,7 @@ describe("useForge duplicate-3 feedback rounds", () => {
     expect(result.current.iterations).toEqual([]);
   });
 
-  it("restores a recorded iteration lineage on rehydrate", async () => {
+  it("restores a recorded iteration lineage on rehydrate without reopening the picker", async () => {
     const lineage = [
       {
         round: 1,
@@ -599,15 +599,15 @@ describe("useForge duplicate-3 feedback rounds", () => {
         round: 2,
         feedback: "make it sturdier",
         sourceDesignId: "id-1",
-        variantIds: DUPLICATE_IDS,
-        pickedDesignId: "dup-2",
+        variantIds: [DUPLICATE_IDS[0]],
+        pickedDesignId: DUPLICATE_IDS[0],
       },
     ];
     window.localStorage.setItem(
       "repaircad.forgeDesigns",
       JSON.stringify({
-        "run-dup-4": {
-          designId: "dup-2",
+        "run-refine-5": {
+          designId: DUPLICATE_IDS[0],
           phase: "ready",
           selectedHandoff: "handoff-one",
           iterations: lineage,
@@ -619,14 +619,16 @@ describe("useForge duplicate-3 feedback rounds", () => {
     let restored = false;
     await act(async () => {
       restored = await result.current.rehydrate({
-        runId: "run-dup-4",
+        runId: "run-refine-5",
         handoffs: HANDOFFS,
       });
     });
 
     expect(restored).toBe(true);
     expect(result.current.iterations).toEqual(lineage);
-    expect(result.current.designId).toBe("dup-2");
+    expect(result.current.designId).toBe(DUPLICATE_IDS[0]);
+    // The design page, not the picker, owns a picked design after rehydrate.
+    expect(result.current.variants).toHaveLength(0);
   });
 
   it("clears the lineage on reset", async () => {
@@ -642,7 +644,7 @@ describe("useForge duplicate-3 feedback rounds", () => {
     window.localStorage.setItem(
       "repaircad.forgeDesigns",
       JSON.stringify({
-        "run-dup-5": {
+        "run-refine-6": {
           designId: "id-1",
           phase: "ready",
           selectedHandoff: "handoff-one",
@@ -653,7 +655,7 @@ describe("useForge duplicate-3 feedback rounds", () => {
 
     const { result } = renderHook(() => useForge());
     await act(async () => {
-      await result.current.rehydrate({ runId: "run-dup-5", handoffs: HANDOFFS });
+      await result.current.rehydrate({ runId: "run-refine-6", handoffs: HANDOFFS });
     });
     expect(result.current.iterations).toEqual(lineage);
 

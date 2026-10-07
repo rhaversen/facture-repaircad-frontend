@@ -102,8 +102,8 @@ export function loadStoredDesignState(runId: string | null): StoredDesignState |
   ) {
     return null;
   }
-  // A picked design can carry the ids of the variants it was chosen from, so
-  // the picker can be reopened later instead of resuming calibration.
+  // A "choosing" entry keeps the ids of the candidates still streaming so a
+  // refresh can reopen the picker mid-pick.
   if (
     entry.variantDesignIds !== undefined &&
     (!Array.isArray(entry.variantDesignIds) ||
@@ -120,10 +120,14 @@ export function loadStoredDesignState(runId: string | null): StoredDesignState |
 function storeDesignState(runId: string | null, entry: StoredDesignState) {
   if (!runId) return;
   const store = readDesignStore();
-  // Once a run has variant ids they persist across later entries so leaving
-  // and returning can always reopen the picker. Same for the selected
-  // handoff: later phase writes must not drop it.
-  if (entry.variantDesignIds === undefined && store[runId]?.variantDesignIds) {
+  // Once a run has variant ids only a "choosing" entry rewrites them; a
+  // picked design lands on the design page and the picker never reopens.
+  // Same for the selected handoff: later phase writes must not drop it.
+  if (
+    entry.phase === "choosing" &&
+    entry.variantDesignIds === undefined &&
+    store[runId]?.variantDesignIds
+  ) {
     entry = { ...entry, variantDesignIds: store[runId].variantDesignIds };
   }
   if (entry.selectedHandoff === undefined && store[runId]?.selectedHandoff) {
@@ -151,13 +155,14 @@ export function clearStoredDesignState(runId: string | null) {
     idle → initializing → choosing → (pick) → calibrating → finalizing → ready
 
   generate() fires one independent design per supplied handoff document in
-  parallel and parks
-  in "choosing" until the user picks one (or a chat-driven feedback round
-  replaces the candidates). The picked design continues into a calibration
-  wizard that renders a sweep of preview frames per parameter. Chat-driven
-  refineExistingDesign() / duplicateAndRefine() reuse the same machine on an
-  existing design. All operations share a single busy lock, an AbortController
-  tree, and localStorage persistence keyed by run id.
+  parallel and parks in "choosing" until the user picks one. The picked
+  design continues into a calibration wizard that renders a sweep of preview
+  frames per parameter. On the design page, refineDesign() runs a linear
+  refinement round: it duplicates the current design once, sends the user's
+  feedback only to the copy, and the copy becomes the new current design —
+  recorded as the next entry in the iteration lineage. All operations share
+  a single busy lock, an AbortController tree, and localStorage persistence
+  keyed by run id.
 */
 export function useForge() {
   const [phase, setPhase] = useState<ForgePhase>("idle");
@@ -252,8 +257,6 @@ export function useForge() {
 
   const abortRef = useRef<AbortController | null>(null);
   const chooseResolverRef = useRef<((id: string | null) => void) | null>(null);
-  // Source design of the current "choosing" round (feedback rounds chain).
-  const chooseResolverSourceRef = useRef<string | null>(null);
 
   /*
     Design ids of every variant still alive in the current picker round. The
@@ -383,7 +386,6 @@ export function useForge() {
       setMesh(null);
       setParameters([]);
       setVariants([]);
-      chooseResolverSourceRef.current = null;
       setDesignId(null);
       setSelectedHandoff(null);
 
@@ -515,8 +517,9 @@ export function useForge() {
         );
 
         // The lock is released while parked: the picker is waiting on the
-        // user, not on Forge, and chat-driven feedback must be able to start
-        // a duplicateAndRefine round from here.
+        // user, not on Forge. Refinement only ever targets an already-picked
+        // design, so refineDesign() bails while the picker is open and the
+        // lock is just parked here.
         releaseBusy(lock);
 
         const chosenId = await chosenPromise;
@@ -549,8 +552,10 @@ export function useForge() {
         // fetch in the calibration phase provides the first render.
         setMesh(variantMeshes.get(chosenId ?? "") ?? null);
         if (runId && chosenId) {
-          // Keep the variant ids so leaving and returning reopens the picker
-          // rather than locking the user into the picked design.
+          // The picked design continues to the design page — once picked the
+          // picker never reopens (refine rounds are linear), so the picked
+          // entry stores no variant list. The ids of the initial candidates
+          // stay in the round-1 iteration lineage for the timeline only.
           const initialRunId = runId;
           const iterations = [
             {
@@ -565,7 +570,6 @@ export function useForge() {
           storeDesignState(initialRunId, {
             designId: chosenId,
             phase: "calibrating",
-            variantDesignIds: [...startedVariantIds],
             selectedHandoff: variantHandoffs.get(chosenId),
             iterations,
           });
@@ -650,13 +654,8 @@ export function useForge() {
     [designId],
   );
 
-  /** Resolve the parked generate()/duplicateAndRefine() with the picked
-   *  variant id. */
+  /** Resolve the parked generate()/rehydrate() with the picked variant id. */
   const chooseDesign = useCallback((pickedDesignId: string | null) => {
-    if (chooseResolverRef.current !== null) {
-      // Feedback rounds keep the picked design as the next round's source.
-      chooseResolverSourceRef.current = pickedDesignId;
-    }
     chooseResolverRef.current?.(pickedDesignId);
     chooseResolverRef.current = null;
   }, []);
@@ -806,17 +805,12 @@ export function useForge() {
         let targetDesignId: string | undefined = stored.designId;
 
         /*
-          A "choosing" entry, or a picked design that kept its variant ids,
-          reopens the picker: the user can go back to chat, return, and still
-          see every candidate instead of being locked into the previous pick.
+          Only a "choosing" entry reopens the picker — a refresh mid-pick. A
+          picked design lands directly on the design page; refinement is
+          linear, so going back to the picker is not part of the flow.
         */
         const pickerIds =
-          stored.phase === "choosing"
-            ? stored.variantDesignIds
-            : Array.isArray(stored.variantDesignIds) &&
-                stored.variantDesignIds.length > 0
-              ? stored.variantDesignIds
-              : null;
+          stored.phase === "choosing" ? stored.variantDesignIds : null;
 
         if (pickerIds != null) {
           const survivingIds = await rehydrateVariants({
@@ -914,286 +908,129 @@ export function useForge() {
   );
 
   /*
-    Feedback iteration round: the carried-forward design is duplicated into
-    three copies, the feedback message is sent ONLY to those copies (the
-    source design is never re-sent, it is carried forward untouched), and
-    the SAME picker view fills in exactly as during the initial generation.
-    When the user picks a copy, that copy is carried forward and the next
-    round duplicates it into three fresh copies. Each round is recorded as
-    an iteration so the frontend can show a timeline of previous rounds.
-    The round parks on the user's pick with the lock released, so the next
-    chat instruction starts round N+1 — indefinitely.
+    Refinement round: the current design is duplicated once, the feedback is
+    sent only to the copy (the source design is never re-sent, it is carried
+    forward untouched), and the copy becomes the new current design — a
+    linear version history with one entry per round, no picker park in
+    between. If the copy has no calibratable parameters it goes straight to
+    "ready"; otherwise its calibration wizard starts.
   */
-  const duplicateAndRefine = useCallback(
-    async ({
-      feedback,
-      sourceDesignId,
-      runId,
-      variantCount: requestedVariantCount,
-    }: {
-      feedback: string;
-      sourceDesignId: string | null;
-      runId: string | null;
-      variantCount?: number;
-    }) => {
-      const source = sourceDesignId ?? chooseResolverSourceRef.current ?? designId;
+  const refineDesign = useCallback(
+    async ({ feedback, runId }: { feedback: string; runId: string | null }) => {
+      const source = designId;
       if (source === null) {
-        setError("No design is available to iterate on.");
-        setPhase("error");
+        console.warn("[Forge] refineDesign skipped — no current design");
         return;
       }
 
       const lock = {};
       if (!acquireBusy(lock)) {
         console.warn(
-          "[Forge] duplicateAndRefine skipped — another operation is in flight",
+          "[Forge] refineDesign skipped — another operation is in flight",
         );
         return;
       }
 
-      // Unpark the previous operation (a parked generate/rehydrate/feedback
-      // round resolves its pick, then sees the abort and unwinds).
-      chooseResolverRef.current?.(source);
-      chooseResolverRef.current = null;
-      abortRef.current?.abort();
       const controller = new AbortController();
+      abortRef.current?.abort();
       abortRef.current = controller;
       const { signal } = controller;
-
-      // The previous round's turns keep running server-side after the local
-      // abort — stop them before their ids are lost. The carried-forward
-      // source survives.
-      const previousIds = [...activeVariantIdsRef.current];
-      activeVariantIdsRef.current = new Set();
-      previousIds
-        .filter((variantId) => variantId !== source)
-        .forEach((variantId) => {
-          stopDesign(variantId).catch((err) => {
-            console.warn(`[Forge] stop failed for variant ${variantId}:`, err);
-          });
-        });
 
       setPhase("initializing");
       setError("");
       setMesh(null);
       setParameters([]);
-      chooseResolverSourceRef.current = source;
-      setVariants([]);
 
       try {
-        // Every candidate is a fresh duplicate of the carried-forward
-        // design; the source itself is never re-sent.
-        const startedVariantIds: string[] = [];
-        activeVariantIdsRef.current = new Set();
-        const noteVariant = (variantId: string) => {
-          if (startedVariantIds.includes(variantId)) return;
-          startedVariantIds.push(variantId);
-          activeVariantIdsRef.current.add(variantId);
-          if (runId) {
-            storeDesignState(runId, {
-              variantDesignIds: [...startedVariantIds],
-              phase: "choosing",
-            });
+        const copyId = await duplicateDesign(source);
+        await sendDesignMessage(copyId, feedback.trim());
+
+        // Follow the copy's turn without parking: a running → running-false
+        // turn boundary means the feedback has been applied and the replies
+        // are streamed out.
+        const stream = subscribeDesignStream(copyId, signal);
+        let turnStarted = false;
+        for (;;) {
+          const { value: ev, done } = await stream.next();
+          if (done || ev.type === "end") break;
+          if (ev.type === "running") {
+            if (ev.data === true) turnStarted = true;
+            else if (turnStarted) break;
+          } else if (ev.type === "error") {
+            throw new Error(ev.data || "Forge error during refinement");
           }
-        };
-        setPhase("choosing");
-        setStatusMessage("");
-
-        // spec: each feedback stage always produces three designs.
-        const candidateCount = Math.max(requestedVariantCount ?? 3, 1);
-
-        const childControllers: AbortController[] = [];
-        let settledCount = 0;
-        let okCount = 0;
-        let roundFailed = false;
-
-        const checkAllSettled = () => {
-          if (
-            chooseResolverRef.current === null ||
-            settledCount < startedVariantIds.length
-          ) {
-            return;
-          }
-          if (okCount === 0) {
-            roundFailed = true;
-            // No pick is coming — resolve the park so the catch surfaces the
-            // error.
-            chooseResolverRef.current?.(null);
-            chooseResolverRef.current = null;
-          }
-        };
-
-        // One candidate's turn: duplicate the carried-forward source, then
-        // send the feedback to the copy only.
-        const runCandidate = async () => {
-          const runningId = await duplicateDesign(source);
-          noteVariant(runningId);
-          setVariants((prev) =>
-            prev.some((v) => v.designId === runningId)
-              ? prev
-              : [
-                  ...prev,
-                  {
-                    designId: runningId,
-                    mesh: null,
-                    status: "generating" as const,
-                    error: null,
-                  },
-                ],
-          );
-          const child = new AbortController();
-          signal.addEventListener("abort", () => child.abort(), { once: true });
-          childControllers.push(child);
-
-          try {
-            const stream = subscribeDesignStream(runningId, child.signal);
-            await sendDesignMessage(runningId, feedback.trim());
-
-            let candidateMesh: THREE_Group | null = null;
-            let turnStarted = false;
-            for (;;) {
-              const { value: ev, done } = await stream.next();
-              if (done || ev.type === "end") break;
-              if (ev.type === "running") {
-                if (ev.data === true) turnStarted = true;
-                else if (turnStarted) break;
-              } else if (ev.type === "geometry") {
-                try {
-                  candidateMesh = await meshGeometryToGroup(ev.data);
-                  if (candidateMesh === null) continue;
-                  patchVariant(runningId, {
-                    mesh: candidateMesh,
-                    status: "preview",
-                  });
-                } catch {
-                  // skip unmeshable frame
-                }
-            } else if (ev.type === "error") {
-                throw new Error(
-                  ev.data || "Forge error during feedback iteration",
-                );
-              }
-            }
-
-            const finalMesh = await fetchMesh(runningId);
-            if (finalMesh !== null) {
-              candidateMesh = finalMesh;
-              patchVariant(runningId, { mesh: candidateMesh, status: "ready" });
-            }
-            if (candidateMesh === null) {
-              throw new Error("Forge did not return a renderable model.");
-            }
-            okCount++;
-            activeVariantIdsRef.current.delete(runningId);
-          } catch (err) {
-            activeVariantIdsRef.current.delete(runningId);
-            if (!signal.aborted) {
-              console.warn(`[Forge] feedback candidate failed:`, err);
-              removeVariant(runningId);
-            }
-          } finally {
-            settledCount++;
-            checkAllSettled();
-          }
-        };
-
-        // Fire all candidates at once — each is a duplicate of the
-        // carried-forward source. The lock is released while parked so the
-        // next chat instruction can start round N+1 from here.
-        Array.from({ length: candidateCount }, () => runCandidate());
-
-        releaseBusy(lock);
-        const chosenId = await new Promise<string | null>((resolve) => {
-          chooseResolverRef.current = resolve;
-        });
-        if (roundFailed) {
-          throw new Error("Forge could not apply the feedback to any design.");
         }
         if (signal.aborted) return;
 
-        if (!acquireBusy(lock)) return;
-
-        // A pick during the round: stop the candidates still running.
-        childControllers.forEach((child) => child.abort());
-        activeVariantIdsRef.current.clear();
-        await Promise.allSettled(
-          startedVariantIds
-            .filter((variantId) => variantId !== chosenId)
-            .map((variantId) => stopDesign(variantId)),
-        );
-        chooseResolverRef.current = null;
-
-        // The picked design continues into calibration, mirroring the tail
-        // of generate(). The picked copy is carried forward as the next
-        // round's source.
+        const mesh = await fetchMesh(copyId);
+        if (signal.aborted) return;
+        if (mesh === null) {
+          throw new Error("Forge did not return a renderable model.");
+        }
+        setMesh(mesh);
         setVariants([]);
-        setDesignId(chosenId);
+        setDesignId(copyId);
+        setStatusMessage("");
+
         const roundIndex = iterationsRef.current.length + 1;
         const roundIteration: ForgeIteration = {
           round: roundIndex,
           feedback: feedback.trim(),
           sourceDesignId: source,
-          variantIds: [...startedVariantIds],
-          pickedDesignId: chosenId ?? undefined,
+          variantIds: [copyId],
+          pickedDesignId: copyId,
         };
         const nextIterations = [...iterationsRef.current, roundIteration];
         setIterationsTracked(nextIterations);
-        if (chosenId === null) return;
-        const chosenMesh = await fetchMesh(chosenId);
-        if (signal.aborted) return;
-        if (chosenMesh !== null) setMesh(chosenMesh);
         if (runId) {
           storeDesignState(runId, {
-            designId: chosenId,
+            designId: copyId,
             phase: "calibrating",
-            variantDesignIds: [...startedVariantIds],
             iterations: nextIterations,
           });
         }
 
-        const chosenDesign = await getDesign(chosenId);
+        setPhase("calibrating");
+        const design = await getDesign(copyId);
         if (signal.aborted) return;
-        const rawParams = chosenDesign?.overview?.parameters ?? [];
+        const rawParams = design?.overview?.parameters ?? [];
         const calibratable = rawParams.filter(isCalibratable);
 
         if (calibratable.length === 0) {
           setPhase("ready");
           if (runId) {
-            storeDesignState(runId, { designId: chosenId, phase: "ready" });
+            storeDesignState(runId, { designId: copyId, phase: "ready" });
           }
           return;
         }
 
         await runCalibration({
-          designId: chosenId,
+          designId: copyId,
           calibratable,
           signal,
           runId,
         });
       } catch (err) {
         if (signal.aborted) return;
-        console.error("Forge feedback iteration failed:", err);
+        console.error("Forge refinement failed:", err);
         const serverMsg = (err as { response?: { data?: { error?: string } } })
           ?.response?.data?.error;
         setError(
           serverMsg ??
-            (err instanceof Error
-              ? err.message
-              : "Forge feedback iteration failed."),
+            (err instanceof Error ? err.message : "Forge refinement failed."),
         );
         setPhase("error");
       } finally {
         releaseBusy(lock);
       }
     },
-    [designId, runCalibration, patchVariant, removeVariant, acquireBusy, releaseBusy, setIterationsTracked],
+    [designId, runCalibration, acquireBusy, releaseBusy, setIterationsTracked],
   );
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
     chooseResolverRef.current = null;
-    chooseResolverSourceRef.current = null;
     stopActiveVariants();
     busyOwnerRef.current = null;
     setBusy(false);
@@ -1226,7 +1063,7 @@ export function useForge() {
     confirmedValues,
     generate,
     rehydrate,
-    duplicateAndRefine,
+    refineDesign,
     chooseDesign,
     confirmParamValue,
     finishCalibration,

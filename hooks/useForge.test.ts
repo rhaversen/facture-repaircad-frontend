@@ -3,10 +3,9 @@ import { renderHook, act } from "@testing-library/react";
 import "./testAct";
 
 import { useForge, loadStoredDesignState, clearStoredDesignState } from "./useForge";
-import type { StreamEvent } from "@/lib/forgeClient";
+import type { GeometrySummary, StreamEvent } from "@/lib/types";
 import * as forgeClient from "@/lib/forgeClient";
-import * as geometryBridge from "@/lib/geometryBridge";
-import { MESH_QUALITY } from "@/lib/geometryBridge";
+import * as glb from "@/lib/glb";
 
 /*
   The hook parks asynchronously; waitFor() inside act() fights React's act
@@ -39,41 +38,57 @@ vi.mock("@/lib/forgeClient", async (importOriginal) => {
     ...actual,
     createDesign: vi.fn(),
     duplicateDesign: vi.fn(),
-    patchParameters: vi.fn(),
+    setParameters: vi.fn(),
     stopDesign: vi.fn(),
     sendDesignMessage: vi.fn(),
     getDesign: vi.fn(),
-    getDesignGeometry: vi.fn(),
+    fetchDesignGeometry: vi.fn(),
     subscribeDesignStream: vi.fn(),
   };
 });
 
-vi.mock("@/lib/geometryBridge", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/geometryBridge")>();
-  return {
-    ...actual,
-    // The real mesher runs manifold WASM in a worker; tests hand back
-    // plain stand-ins.
-    meshGeometryToGroup: vi.fn(() => ({}) as never),
-  };
-});
+vi.mock("@/lib/glb", () => ({
+  // The real parser runs three.js GLTFLoader against the fetched GLB;
+  // tests hand back a plain stand-in.
+  parseGlbCached: vi.fn(async () => ({
+    scene: {},
+    partMeshes: new Map(),
+    parts: [],
+  })),
+}));
 
 const HANDOFFS = ["handoff-one", "handoff-two", "handoff-three"];
 const IDS = ["id-1", "id-2", "id-3"];
 /** Ids handed out by duplicateDesign mocks in call order. */
 const DUPLICATE_IDS = ["dup-1", "dup-2", "dup-3"];
 
+const SUMMARY_GEOMETRY: GeometrySummary = {
+  revision: "r1",
+  bytes: 16,
+  parts: 1,
+  triangles: 2,
+  min: [0, 0, 0],
+  max: [1, 1, 1],
+  ok: true,
+  errors: 0,
+  builtAt: "2024-01-01T00:00:00Z",
+  guides: [],
+};
+
 function meshEvent(): StreamEvent {
-  // Minimal lowered geometry document; the hook only forwards it to
-  // meshGeometryToGroup.
-  return { type: "geometry", data: { units: "mm", instances: [], framing: { size: null, center: [0, 0, 0], maxDim: 0 } } };
+  // The stream only announces that geometry changed; the hook GETs the GLB
+  // itself via fetchDesignGeometry + parseGlbCached.
+  return {
+    type: "geometry",
+    data: { ...SUMMARY_GEOMETRY, revision: "r1" },
+  };
 }
 
 function endEvent(): StreamEvent {
   return { type: "end", data: "" };
 }
 
-function sseStream(events: forgeClient.StreamEvent[]): ReadableStream<Uint8Array> {
+function sseStream(events: StreamEvent[]): ReadableStream<Uint8Array> {
   const chunks = events.map(
     (ev) =>
       new TextEncoder().encode(`event: ${ev.type}\ndata: ${JSON.stringify(ev.data)}\n\n`),
@@ -96,18 +111,18 @@ function mockSuccessfulGeneration() {
   );
   vi.mocked(forgeClient.sendDesignMessage).mockResolvedValue(undefined);
   vi.mocked(forgeClient.subscribeDesignStream).mockImplementation(async function* () {
-    yield meshEvent();
     yield endEvent();
   });
-  vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
-    units: "mm",
-    instances: [],
-    framing: { size: null, center: [0, 0, 0], maxDim: 0 },
-  });
-  vi.mocked(geometryBridge.meshGeometryToGroup).mockResolvedValue({ children: [] } as never);
+  vi.mocked(forgeClient.fetchDesignGeometry).mockResolvedValue({
+    status: "ok",
+    blob: new ArrayBuffer(0),
+    revision: "r1",
+  } as never);
   // No calibratable parameters → generation goes straight to ready on pick.
   vi.mocked(forgeClient.getDesign).mockResolvedValue({
-    overview: { parameters: [] },
+    _id: "id",
+    parameters: [],
+    geometry: SUMMARY_GEOMETRY,
   });
 }
 
@@ -118,17 +133,17 @@ function mockSuccessfulFeedbackRound() {
   );
   vi.mocked(forgeClient.sendDesignMessage).mockResolvedValue(undefined);
   vi.mocked(forgeClient.subscribeDesignStream).mockImplementation(async function* () {
-    yield meshEvent();
     yield endEvent();
   });
-  vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
-    units: "mm",
-    instances: [],
-    framing: { size: null, center: [0, 0, 0], maxDim: 0 },
-  });
-  vi.mocked(geometryBridge.meshGeometryToGroup).mockResolvedValue({ children: [] } as never);
+  vi.mocked(forgeClient.fetchDesignGeometry).mockResolvedValue({
+    status: "ok",
+    blob: new ArrayBuffer(0),
+    revision: "r1",
+  } as never);
   vi.mocked(forgeClient.getDesign).mockResolvedValue({
-    overview: { parameters: [] },
+    _id: "id",
+    parameters: [],
+    geometry: SUMMARY_GEOMETRY,
   });
 }
 
@@ -254,12 +269,16 @@ describe("useForge variant selection", () => {
         },
       }),
     );
-    vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
-      units: "mm",
-      instances: [],
-      framing: { size: null, center: [0, 0, 0], maxDim: 0 },
+    vi.mocked(forgeClient.getDesign).mockResolvedValue({
+      _id: "id-2",
+      parameters: [],
+      geometry: SUMMARY_GEOMETRY,
     });
-    // meshGeometryToGroup on an empty document must not crash the round.
+    vi.mocked(forgeClient.fetchDesignGeometry).mockResolvedValue({
+      status: "ok",
+      blob: new ArrayBuffer(0),
+      revision: "r1",
+    } as never);
 
     const { result } = renderHook(() => useForge());
     let restored = false;
@@ -285,13 +304,15 @@ describe("useForge variant selection", () => {
       }),
     );
     vi.mocked(forgeClient.getDesign).mockResolvedValue({
-      overview: { parameters: [] },
+      _id: "id-2",
+      parameters: [],
+      geometry: SUMMARY_GEOMETRY,
     });
-    vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
-      units: "mm",
-      instances: [],
-      framing: { size: null, center: [0, 0, 0], maxDim: 0 },
-    });
+    vi.mocked(forgeClient.fetchDesignGeometry).mockResolvedValue({
+      status: "ok",
+      blob: new ArrayBuffer(0),
+      revision: "r1",
+    } as never);
 
     const { result } = renderHook(() => useForge());
     let restored = false;
@@ -340,14 +361,15 @@ describe("useForge picker SSE handling", () => {
     );
     vi.mocked(forgeClient.sendDesignMessage).mockResolvedValue(undefined);
     vi.mocked(forgeClient.getDesign).mockResolvedValue({
-      overview: { parameters: [] },
+      _id: "id",
+      parameters: [],
+      geometry: SUMMARY_GEOMETRY,
     });
-    vi.mocked(forgeClient.getDesignGeometry).mockResolvedValue({
-      units: "mm",
-      instances: [],
-      framing: { size: null, center: [0, 0, 0], maxDim: 0 },
-    });
-    vi.mocked(geometryBridge.meshGeometryToGroup).mockResolvedValue({ children: [] } as never);
+    vi.mocked(forgeClient.fetchDesignGeometry).mockResolvedValue({
+      status: "ok",
+      blob: new ArrayBuffer(0),
+      revision: "r1",
+    } as never);
   });
 
   afterEach(() => {
@@ -360,10 +382,9 @@ describe("useForge picker SSE handling", () => {
       async function* () {
         callCount++;
         if (callCount === 2) {
-          yield { type: "error", data: "boom" };
+          yield { type: "error" as const, data: "boom" };
           return;
         }
-        yield meshEvent();
         yield endEvent();
       },
     );
@@ -390,7 +411,6 @@ describe("useForge picker SSE handling", () => {
   it("streams SSE ir frames through a real ReadableStream response", async () => {
     vi.mocked(forgeClient.subscribeDesignStream).mockImplementation(
       async function* () {
-        yield meshEvent();
         yield endEvent();
       },
     );
@@ -421,7 +441,11 @@ describe("useForge picker SSE handling", () => {
     await poll(
       () => result.current.phase === "ready" || result.current.phase === "error",
     );
-    expect(forgeClient.getDesignGeometry).toHaveBeenCalledWith("id-1", { quality: MESH_QUALITY });
+    expect(forgeClient.fetchDesignGeometry).toHaveBeenCalledWith(
+      "id-1",
+      undefined,
+    );
+    expect(glb.parseGlbCached).toHaveBeenCalled();
     expect(result.current.phase).toBe("ready");
   });
 
@@ -572,6 +596,16 @@ describe("useForge single-duplicate refinement rounds", () => {
         },
       }),
     );
+    vi.mocked(forgeClient.getDesign).mockResolvedValue({
+      _id: "id-2",
+      parameters: [],
+      geometry: SUMMARY_GEOMETRY,
+    });
+    vi.mocked(forgeClient.fetchDesignGeometry).mockResolvedValue({
+      status: "ok",
+      blob: new ArrayBuffer(0),
+      revision: "r1",
+    } as never);
 
     const { result } = renderHook(() => useForge());
     let restored = false;
@@ -615,6 +649,17 @@ describe("useForge single-duplicate refinement rounds", () => {
         },
       }),
     );
+
+    vi.mocked(forgeClient.getDesign).mockResolvedValue({
+      _id: "id-2",
+      parameters: [],
+      geometry: SUMMARY_GEOMETRY,
+    });
+    vi.mocked(forgeClient.fetchDesignGeometry).mockResolvedValue({
+      status: "ok",
+      blob: new ArrayBuffer(0),
+      revision: "r1",
+    } as never);
 
     const { result } = renderHook(() => useForge());
     let restored = false;

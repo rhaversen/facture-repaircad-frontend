@@ -82,3 +82,40 @@ export function screenForSelectedRun(
     ? CHAT_SCREEN
     : INTAKE_MIN;
 }
+
+/*
+  The timeline's six steps are not one-per-screen: step 4 is the
+  conversation; steps 5, 6 and 7 share the CAD workspace — selecting the
+  initial rough design, refining/calibrating it, and the final repair
+  guidance. Step numbers therefore can't be used as screen numbers.
+*/
+export function timelineStepToScreen(step: number): number {
+  const map: Record<number, number> = {
+    1: INTAKE_MIN, // "Describe & Photos"
+    2: 2, // "Annotate"
+    3: 3, // "Review"
+    4: CHAT_SCREEN, // "Repair Planning" (conversation)
+    5: CAD_SCREEN, // "Select Initial Design"
+    6: CAD_SCREEN, // "Refine & Calibrate" (same CAD workspace)
+    7: CAD_SCREEN, // "Repair Guidance" (same CAD workspace)
+  };
+  return map[step] ?? CHAT_SCREEN;
+}
+
+/*
+  Whether `currentScreen` may jump to timeline `step`. Past intake the
+  timeline navigates freely; within intake only backward moves are allowed
+  so the forward "Continue" guards (e.g. a size reference is required before
+  Review) can't be bypassed by clicking ahead.
+*/
+export function canNavigateToStep(
+  currentScreen: number,
+  step: number,
+): boolean {
+  if (currentScreen >= CHAT_SCREEN) return true;
+  const target = timelineStepToScreen(step);
+  return (
+    target >= INTAKE_MIN && target <= INTAKE_MAX && target < currentScreen
+  );
+}
+

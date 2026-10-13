@@ -203,9 +203,10 @@ function LoadingSpinner() {
 }
 
 /*
-  Display-space bounds of a decoded Forge mesh, with the Z-up correction
-  applied. The radius sets camera fit distances; the center is where the
-  model's visual middle sits.
+  Display-space bounds of a decoded Forge mesh. The backend's GLB root node
+  pre-applies the Z-up → Y-up rotation, so the parsed scene is already in
+  display space and the bounds read straight off it. The radius sets camera
+  fit distances; the center is where the model's visual middle sits.
 */
 export function meshDisplayBounds(scene: THREE.Object3D) {
   scene.updateWorldMatrix(true, true);
@@ -227,7 +228,6 @@ export function meshDisplayBounds(scene: THREE.Object3D) {
     }
   });
   if (!hasGeometry || localBox.isEmpty()) return null;
-  localBox.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
   const sphere = localBox.getBoundingSphere(new THREE.Sphere());
   if (!isFinite(sphere.radius) || sphere.radius <= 0) return null;
   return {
@@ -498,13 +498,17 @@ function PickerModel({
 export function DesignPicker({
   variants,
   iterations = [],
-  onSelect,
+  selectedId,
+  onSelected,
 }: {
   variants: DesignVariant[];
   iterations?: ForgeIteration[];
-  onSelect?: (designId: string) => void;
+  /** The tile the user has "Select"ed, if any (parent-owned state). */
+  selectedId: string | null;
+  /** A tile's Select was clicked. Selection alone; the parent renders the
+     pinned Continue button that commits the pick. */
+  onSelected: (designId: string) => void;
 }) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
 
@@ -678,14 +682,20 @@ export function DesignPicker({
                   type="button"
                   className={`rounded-lg border px-3 py-1 text-[13px] ${
                     selected
-                      ? "border-brand bg-brand text-white"
-                      : "border-[#d5d9e0] bg-white text-muted hover:border-brand hover:text-brand"
+                      ? "cursor-default border-brand bg-brand text-white"
+                      : variant.mesh === null || variant.status !== "ready"
+                        ? "cursor-not-allowed border-[#d5d9e0] bg-white text-muted opacity-50"
+                        : "border-[#d5d9e0] bg-white text-muted hover:border-brand hover:text-brand"
                   }`}
-                  disabled={variant.mesh === null || variant.status !== "ready"}
-                  onClick={() => {
-                    setSelectedId(variant.designId);
-                    onSelect?.(variant.designId);
-                  }}
+                  disabled={
+                    variant.mesh === null ||
+                    variant.status !== "ready" ||
+                    selected
+                  }
+                  // A selection is locked once made; switching to another
+                  // design means clicking that tile. The Continue button
+                  // below is the only way out of the picker.
+                  onClick={() => onSelected(variant.designId)}
                 >
                   {variant.status !== "ready"
                     ? "Generating…"

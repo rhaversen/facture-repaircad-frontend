@@ -5,7 +5,7 @@ import { Stage } from "@react-three/drei";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import RepairProgress from "@/components/RepairProgress";
-import { AppHeader, AppShell, Card } from "@/components/AppShell";
+import { AppShell, Card } from "@/components/AppShell";
 import { FlowChatFrame } from "@/features/chat/FlowChatEmbed";
 import { useRefinementRun } from "@/hooks/useRefinementRun";
 import { useForge } from "@/hooks/useForge";
@@ -30,10 +30,9 @@ interface CadModelViewProps {
     three designs per opened run).
   */
   shouldAutoGenerate?: boolean;
-  onBack: () => void;
   onNewRun: () => void;
-  onViewRuns: () => void;
-  onLogout: () => void;
+  /** Back to the conversation (repair planning) from the CAD timeline. */
+  onBackToChat?: () => void;
 }
 
 /*
@@ -48,10 +47,8 @@ export default function CadModelView({
   handoffs,
   runId,
   shouldAutoGenerate = false,
-  onBack,
   onNewRun,
-  onViewRuns,
-  onLogout,
+  onBackToChat,
 }: CadModelViewProps) {
   const forge = useForge();
   const {
@@ -210,6 +207,19 @@ export default function CadModelView({
 
   const finalGuidance = refinementRunningDoc?.final_guidance?.trim() ?? "";
 
+  /*
+    The CAD workspace owns three timeline steps, one per sub-phase:
+    5 while the rough-design picker is open (or a model is still being
+    generated), 6 while the design is being refined/calibrated, 7 once
+    the repair guidance has landed.
+  */
+  const currentCADStep =
+    phase === "calibrating" || phase === "ready" || phase === "finalizing"
+      ? finalGuidance
+        ? 7
+        : 6
+      : 5;
+
   function handleDownloadFinalGuidance() {
     if (!finalGuidance) return;
     const blob = new Blob([finalGuidance], { type: "text/markdown;charset=utf-8" });
@@ -240,32 +250,50 @@ export default function CadModelView({
     [variants],
   );
 
+  // Which candidate the user has "Select"ed in the picker. Selection alone
+  // no longer commits — the Continue button below the tiles does. The state
+  // lives here, not in DesignPicker, because a tile finishing generation
+  // remounts the picker (pickerKey) and a mounted-state selection would be
+  // lost; a stale selection referring to a vanished candidate is
+  // dropped below.
+  const [pickerSelectedId, setPickerSelectedId] = useState<string | null>(
+    null,
+  );
+
+  const [prevVariants, setPrevVariants] = useState(variants);
+  if (prevVariants !== variants) {
+    setPrevVariants(variants);
+    setPickerSelectedId((prev) =>
+      prev !== null && variants.some((v) => v.designId === prev) ? prev : null,
+    );
+  }
+
   const showFinalGuidanceSection = phase === "ready";
 
   return (
     <AppShell fill>
       <Card fill className="!max-w-[1500px]">
-        <AppHeader
-          utilities={
-            <>
-              <button type="button" className="btn-utility" onClick={onNewRun}>
-                New run
-              </button>
-              <button type="button" className="btn-utility" onClick={onViewRuns}>
-                All runs
-              </button>
-              <button type="button" className="btn-ghost" onClick={onLogout}>
-                Sign out
-              </button>
-            </>
-          }
-        />
-
-        <div className="mb-6 shrink-0">
-          <button type="button" className="btn-secondary" onClick={onBack}>
-            ← Back to chat
+        <div className="relative mb-6 shrink-0">
+          <button
+            type="button"
+            title="Start a new run"
+            className="btn-utility absolute -top-2 right-0"
+            onClick={onNewRun}
+          >
+            ＋ New run
           </button>
-          <RepairProgress currentStep={finalGuidance ? 6 : 5} />
+          <RepairProgress
+            currentStep={currentCADStep}
+            onStepClick={
+              onBackToChat
+                ? (step) => {
+                    /* Steps 1-4 live on the chat screen; 5-7 are this
+                       workspace itself, so clicking them is a no-op. */
+                    if (step < 5) onBackToChat();
+                  }
+                : undefined
+            }
+          />
         </div>
 
         {entryChecking ? (
@@ -309,27 +337,58 @@ export default function CadModelView({
             </div>
           </div>
         ) : phase === "choosing" ? (
-          <section className="min-h-0 min-w-0 flex-1">
-            <div className="mb-6">
-              <h1 className="text-[30px]">Choose a rough shape for the design</h1>
-              <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
-                Several candidates were generated from your repair handoff.
-                Pick the one to continue with. This step is only about getting
-                the right <strong>shape</strong> — the next step will ask you
-                for accurate measurements, so no need to judge the exact
-                dimensions here.
-              </p>
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="min-h-0 flex-1 overflow-y-auto pb-24">
+              <div className="shrink-0">
+                <h1 className="text-[30px]">Choose a rough shape for the design</h1>
+                <p className="mb-4 mt-0 text-[17px] leading-relaxed text-muted">
+                  Several candidates were generated from your repair handoff.
+                  Select the one you want — the other candidates are kept while
+                  you decide. This step is only about getting the right{" "}
+                  <strong>shape</strong> — the next step will ask you for
+                  accurate measurements, so no need to judge the exact
+                  dimensions here.
+                </p>
+              </div>
+              <div className="min-w-0">
+                <DesignPicker
+                  key={pickerKey}
+                  variants={variants}
+                  iterations={iterations}
+                  selectedId={pickerSelectedId}
+                  onSelected={setPickerSelectedId}
+                />
+              </div>
             </div>
-            <DesignPicker
-              key={pickerKey}
-              variants={variants}
-              iterations={iterations}
-              onSelect={(selectedDesignId) => {
-                // Instant commit: the selected candidate continues into
-                // calibration right away; unused candidates are stopped.
-                chooseDesign(selectedDesignId);
-              }}
-            />
+
+            {/*
+              Pinned to the bottom edge of the card (absolute, not part of
+              the scroll flow) so the commit button is always reachable
+              without scrolling to the tiles.
+            */}
+            <div className="absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-between gap-3 rounded-b-xl border border-line-soft bg-surface px-5 py-3.5 shadow-[0_-6px_16px_rgba(16,24,40,0.06)]">
+              <span className="text-[14px] text-muted">
+                {pickerSelectedId !== null
+                  ? `Design ${variants.findIndex((v) => v.designId === pickerSelectedId) + 1} is selected. Pick another tile to switch.`
+                  : "Select a design to continue."}
+              </span>
+              <button
+                type="button"
+                className={`bg-brand px-6 py-3 text-[15px] font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] ${
+                  pickerSelectedId !== null
+                    ? "hover:bg-brand-dark"
+                    : "cursor-not-allowed opacity-40"
+                }`}
+                disabled={pickerSelectedId === null}
+                onClick={() =>
+                  pickerSelectedId !== null && chooseDesign(pickerSelectedId)
+                }
+              >
+                {pickerSelectedId !== null
+                  ? `Continue with Design ${variants.findIndex((v) => v.designId === pickerSelectedId) + 1} →`
+                  : "Continue →"}
+              </button>
+            </div>
           </section>
         ) : phase === "calibrating" ? (
           <div className="flex min-h-[600px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">

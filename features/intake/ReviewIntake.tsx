@@ -18,6 +18,8 @@ interface ReviewIntakeProps {
   onSubmit: (annotatedCopies: Record<string, AnnotatedCopy>) => void;
   submitting: boolean;
   submissionError: string;
+  /** navigate to an earlier timeline step (1-3 blocks forward-only intake). */
+  onStepClick?: (step: number) => void;
 }
 
 /*
@@ -32,6 +34,7 @@ export default function ReviewIntake({
   onSubmit,
   submitting,
   submissionError,
+  onStepClick,
 }: ReviewIntakeProps) {
   const [annotatedCopies, setAnnotatedCopies] = useState<
     Record<string, AnnotatedCopy>
@@ -78,7 +81,7 @@ export default function ReviewIntake({
       <Card>
         <AppHeader />
 
-        <RepairProgress currentStep={3} />
+        <RepairProgress currentStep={3} onStepClick={onStepClick} />
 
         <h1>Review your repair</h1>
 

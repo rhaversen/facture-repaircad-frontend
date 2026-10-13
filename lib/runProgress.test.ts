@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   CHAT_SCREEN,
   CAD_SCREEN,
+  canNavigateToStep,
   deriveScreen,
   hasUserTurn,
   runShowsProgress,
   screenForSelectedRun,
+  timelineStepToScreen,
   type ScreenState,
 } from "./runProgress";
 import type { FlowMessage, FlowRun } from "./types";
@@ -167,5 +169,61 @@ describe("deriveScreen", () => {
 
   it("run list is never rewritten by derivation", () => {
     expect(deriveScreen(state({ requestedScreen: 7 }))).toBe(7);
+  });
+});
+
+describe("timelineStepToScreen", () => {
+  it("maps wizard steps 1-3 to their screens", () => {
+    expect(timelineStepToScreen(1)).toBe(1);
+    expect(timelineStepToScreen(2)).toBe(2);
+    expect(timelineStepToScreen(3)).toBe(3);
+  });
+
+  it("maps step 4 to the conversation", () => {
+    expect(timelineStepToScreen(4)).toBe(CHAT_SCREEN);
+  });
+
+  it("maps steps 5, 6 and 7 to the CAD workspace", () => {
+    expect(timelineStepToScreen(5)).toBe(CAD_SCREEN);
+    expect(timelineStepToScreen(6)).toBe(CAD_SCREEN);
+    expect(timelineStepToScreen(7)).toBe(CAD_SCREEN);
+  });
+
+  it("unknown steps fall back to the conversation", () => {
+    expect(timelineStepToScreen(0)).toBe(CHAT_SCREEN);
+    expect(timelineStepToScreen(8)).toBe(CHAT_SCREEN);
+  });
+});
+
+describe("canNavigateToStep", () => {
+  it("never allows a no-op self navigation", () => {
+    expect(canNavigateToStep(1, 1)).toBe(false);
+    expect(canNavigateToStep(2, 2)).toBe(false);
+    expect(canNavigateToStep(3, 3)).toBe(false);
+  });
+
+  it("allows backward moves within intake only", () => {
+    expect(canNavigateToStep(3, 1)).toBe(true);
+    expect(canNavigateToStep(3, 2)).toBe(true);
+    expect(canNavigateToStep(2, 1)).toBe(true);
+  });
+
+  it("blocks forward moves within intake", () => {
+    expect(canNavigateToStep(1, 2)).toBe(false);
+    expect(canNavigateToStep(1, 3)).toBe(false);
+    expect(canNavigateToStep(2, 3)).toBe(false);
+  });
+
+  it("lets the chat jump to any step", () => {
+    expect(canNavigateToStep(CHAT_SCREEN, 1)).toBe(true);
+    expect(canNavigateToStep(CHAT_SCREEN, 7)).toBe(true);
+  });
+
+  it("lets the CAD workspace jump to any step", () => {
+    expect(canNavigateToStep(CAD_SCREEN, 1)).toBe(true);
+    expect(canNavigateToStep(CAD_SCREEN, 2)).toBe(true);
+    expect(canNavigateToStep(CAD_SCREEN, 3)).toBe(true);
+    expect(canNavigateToStep(CAD_SCREEN, 4)).toBe(true);
+    expect(canNavigateToStep(CAD_SCREEN, 7)).toBe(true);
   });
 });

@@ -17,9 +17,11 @@ import { authUrl, getMe, logout } from "@/lib/auth";
 import { buildIntakeMessage, buildClarificationAnnotations } from "@/lib/intakeMessageUtils";
 import { describeMessageContent } from "@/lib/messageContent";
 import {
+  canNavigateToStep,
   deriveScreen,
   handoffReadyFor,
   screenForSelectedRun,
+  timelineStepToScreen,
 } from "@/lib/runProgress";
 import { collectHandoffs } from "@/lib/handoffs";
 import { s2NodeId } from "@/lib/pipeline";
@@ -138,6 +140,35 @@ export default function RepairCADApp() {
   if (prevHandoffReady !== currentHandoffReady) {
     setPrevHandoffReady(currentHandoffReady);
     if (!currentHandoffReady) setHandoffDismissed(false);
+  }
+
+  /*
+    Timeline navigation: clicking a step jumps to the screen it belongs
+    to (steps 5-7 are the CAD workspace, 1-3 the wizard, 4 the
+    conversation). Forward moves inside the wizard are off — the
+    Continue buttons own the one-way guards. Crossing back from CAD to
+    the chat dismisses the handoff so the auto-advance doesn't drag
+    the user straight back.
+  */
+  function handleTimelineStep(step: number) {
+    if (!canNavigateToStep(screen, step)) return;
+    const target = timelineStepToScreen(step);
+    if (target === screen) return;
+    /* The CAD workspace needs an actual model to look at. */
+    if (target === CAD_SCREEN && !currentHandoffReady) return;
+    if (target === CHAT_SCREEN && screen === CAD_SCREEN) {
+      setHandoffDismissed(true);
+    }
+    if (target === 2) intake.openAnnotationScreen();
+    setScreen(target);
+  }
+
+  /* Return to the conversation from the CAD workspace; same dismissal
+     as handleTimelineStep so the demo flags are not duplicated below. */
+  function handleBackToChat() {
+    if (screen !== CAD_SCREEN) return;
+    setHandoffDismissed(true);
+    setScreen(CHAT_SCREEN);
   }
 
   // ── Bootstrap + sync effects ────────────────────────────────────────────
@@ -373,7 +404,7 @@ export default function RepairCADApp() {
         <Card className="!max-w-[1600px] !px-10">
           <AppHeader />
 
-          <RepairProgress currentStep={2} />
+          <RepairProgress currentStep={2} onStepClick={handleTimelineStep} />
 
           <h1>Annotate your photos</h1>
 
@@ -416,6 +447,7 @@ export default function RepairCADApp() {
         photos={intake.photos}
         annotations={intake.annotations}
         onBack={() => setScreen(2)}
+        onStepClick={handleTimelineStep}
         onSubmit={handleSubmit}
         submitting={submitting}
         submissionError={submissionError}
@@ -439,7 +471,7 @@ export default function RepairCADApp() {
     return (
       <div className="flex h-dvh flex-col overflow-hidden">
         <div className="shrink-0 px-6 pb-4 pt-4 max-[640px]:px-5">
-          <RepairProgress currentStep={4} flush />
+          <RepairProgress currentStep={4} flush onStepClick={handleTimelineStep} />
         </div>
 
         {waitingForCaseClarification ? (
@@ -487,13 +519,8 @@ export default function RepairCADApp() {
         handoffs={handoffs}
         runId={activeRunId}
         shouldAutoGenerate={shouldAutoGenerate}
-        onBack={() => {
-          setHandoffDismissed(true);
-          setScreen(CHAT_SCREEN);
-        }}
         onNewRun={handleCreateRun}
-        onViewRuns={handleViewRuns}
-        onLogout={handleLogout}
+        onBackToChat={handleBackToChat}
       />
     );
   }

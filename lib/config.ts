@@ -21,8 +21,3 @@ export const FORGE_MODEL = CHAT_MODELS.forge;
 // Reasoning effort pinned on Forge chat requests. kimi-k3 advertises
 // max/high/low — medium would be silently dropped by Forge's effort validator.
 export const FORGE_REASONING_EFFORT = "low";
-
-// Calibration sweep tuning. SWEEP_RENDER_STEPS renders are fired in parallel
-// per parameter; the viewport plays them as a ping-pong loop at SWEEP_FPS.
-export const SWEEP_RENDER_STEPS = 15;
-export const SWEEP_FPS = 24;

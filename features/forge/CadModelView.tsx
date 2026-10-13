@@ -2,7 +2,7 @@
 
 import ReactMarkdown from "react-markdown";
 import { Stage } from "@react-three/drei";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import RepairProgress from "@/components/RepairProgress";
 import { AppHeader, AppShell, Card } from "@/components/AppShell";
@@ -10,20 +10,14 @@ import { FlowChatFrame } from "@/features/chat/FlowChatEmbed";
 import { useRefinementRun } from "@/hooks/useRefinementRun";
 import { useForge } from "@/hooks/useForge";
 import { useDesignExists } from "@/hooks/useDesignExists";
-import { getDesignGeometry } from "@/lib/forgeClient";
-import { formatParamName } from "@/lib/forgeParams";
-import { MESH_QUALITY } from "@/lib/geometryBridge";
+import { downloadBlob, exportScene } from "@/lib/exportModel";
+import type { Guide } from "@/lib/types";
 import {
   CadCanvas,
   DesignPicker,
   Model,
-  SweepPlayer,
-  type Playhead,
 } from "./viewport";
-import CalibrationPanel, {
-  useActiveSweep,
-  useSweepReadout,
-} from "./CalibrationPanel";
+import CalibrationPanel from "./CalibrationPanel";
 
 interface CadModelViewProps {
   handoffs: string[];
@@ -45,10 +39,10 @@ interface CadModelViewProps {
 /*
   Screen 6 — the Forge workspace. Renders the provisional CAD model produced
   from the RepairCAD handoff document, the variant picker while candidates
-  stream in, the calibration wizard with per-parameter sweep previews, the
-  refinement chat (a second Flow run), and the final repair instructions.
-  The same <Canvas> instance hosts every phase, so the camera keeps its
-  orientation throughout.
+  stream in, the calibration wizard with per-parameter guides and
+  measurements, the refinement chat (a second Flow run), and the final repair
+  instructions. The same <Canvas> instance hosts every phase, so the camera
+  keeps its orientation throughout.
 */
 export default function CadModelView({
   handoffs,
@@ -62,7 +56,8 @@ export default function CadModelView({
   const forge = useForge();
   const {
     phase,
-    mesh,
+    model,
+    guides,
     error,
     parameters,
     statusMessage,
@@ -70,7 +65,6 @@ export default function CadModelView({
     designId,
     selectedHandoff,
     busy,
-    paramSweeps,
     confirmedValues,
     generate,
     rehydrate,
@@ -167,26 +161,57 @@ export default function CadModelView({
   }
 
   /*
-    Sweep playback: the name of the parameter whose rendered sweep is playing
-    in the viewport (null = default model). Each row's "Preview sweep" button
-    selects it; the flipbook loops until another parameter is chosen, a value
-    is set for the playing parameter, or the row's button is toggled off.
+    Guides visibility: a global on/off baseline (hidden by default) plus an
+    optional explicit per-parameter override (undefined = follow the
+    baseline), and a hover that previews/brightens that parameter's guides.
+    All reset with the design switch.
   */
-  const [sweepingParam, setSweepingParam] = useState<string | null>(null);
-  const { frameValues, frameMeshes } = useActiveSweep(sweepingParam, paramSweeps);
+  const [guidesOn, setGuidesOn] = useState(false);
+  const [guideOverrides, setGuideOverrides] = useState<Record<string, boolean>>({});
+  const [hoveredGuideParam, setHoveredGuideParam] = useState<string | null>(null);
+  const guideVisible = useCallback(
+    (name: string) => guideOverrides[name] ?? guidesOn,
+    [guideOverrides, guidesOn],
+  );
+  const toggleGuides = useCallback((name: string) => {
+    setGuideOverrides((prev) => ({ ...prev, [name]: !(prev[name] ?? guidesOn) }));
+  }, [guidesOn]);
+  const setAllGuides = useCallback((shown: boolean) => {
+    // Like a tri-state "select all" checkbox: overrides keep expressing
+    // the mixed state, so they must clear on the way to either extreme.
+    setGuideOverrides({});
+    setGuidesOn(shown);
+  }, []);
 
-  const playheadRef = useRef<Playhead>({ pos: 0, index: 0 });
-  const sweepValueRef = useSweepReadout(sweepingParam, frameValues, playheadRef);
+  // Guides are keyed by parameter name for the panel's per-row toggles and
+  // the viewport's hover matching.
+  const guidesByParam = useMemo(() => {
+    const map = new Map<string, Guide[]>();
+    for (const g of guides) {
+      const list = map.get(g.param);
+      if (list === undefined) map.set(g.param, [g]);
+      else list.push(g);
+    }
+    return map;
+  }, [guides]);
+  // Tri-state for the header toggle: shown only when every guide-bearing
+  // parameter is visible, hidden only when none are, mixed otherwise.
+  const guidesState = useMemo<"shown" | "hidden" | "mixed">(() => {
+    const names = [...guidesByParam.keys()];
+    const shownCount = names.filter((n) => guideVisible(n)).length;
+    return shownCount === 0 ? "hidden" : shownCount === names.length ? "shown" : "mixed";
+  }, [guideVisible, guidesByParam]);
 
-  function handlePreviewSweep(paramName: string) {
-    setSweepingParam((prev) => (prev === paramName ? null : paramName));
+  // A design switch invalidates the per-param overrides and any hover.
+  const [prevDesignId, setPrevDesignId] = useState(designId);
+  if (prevDesignId !== designId) {
+    setPrevDesignId(designId);
+    setGuidesOn(false);
+    setGuideOverrides({});
+    setHoveredGuideParam(null);
   }
 
   function handleConfirmParam(paramName: string, value: number) {
-    // A confirmed value pins the played param, so its flipbook stops —
-    // otherwise the republished sweep (fresh frames, reset playhead) would
-    // restart underneath the user as if the value never landed.
-    setSweepingParam((prev) => (prev === paramName ? null : prev));
     confirmParamValue(paramName, value);
   }
 
@@ -215,20 +240,13 @@ export default function CadModelView({
     URL.revokeObjectURL(url);
   }
 
-  async function handleDownloadMesh() {
-    if (designId === null) return;
+  // Downloads reuse the already-parsed scene — it carries the per-part
+  // material data the exporters need, which a fresh GLTFLoader.parse would
+  // not reproduce.
+  function handleDownload() {
+    if (designId === null || model === null) return;
     try {
-      // Geometry download = the wasm-ready solid nodes the client meshes from.
-      const geometry = await getDesignGeometry(designId, { quality: MESH_QUALITY });
-      if (geometry === null) return;
-      const url = URL.createObjectURL(
-        new Blob([JSON.stringify(geometry)], { type: "application/json" }),
-      );
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `design-${designId}.geometry.json`;
-      link.click();
-      URL.revokeObjectURL(url);
+      downloadBlob(exportScene(model.scene), `${designId}.stl`);
     } catch (err) {
       console.error("Mesh download failed:", err);
     }
@@ -333,26 +351,21 @@ export default function CadModelView({
         ) : phase === "calibrating" ? (
           <div className="flex min-h-[600px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
             <div className="relative flex min-h-[420px] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white max-lg:h-[560px]">
-              <CadCanvas generating={isLoading} fitKey={designId} fitMesh={mesh}>
-                {sweepingParam !== null && frameMeshes.length > 0 ? (
+              {model !== null ? (
+                <CadCanvas
+                  generating={isLoading}
+                  fitKey={designId}
+                  fitModel={model}
+                  designId={designId ?? undefined}
+                  guides={guides}
+                  guideVisible={guideVisible}
+                  hoveredGuideParam={hoveredGuideParam}
+                >
                   <Stage adjustCamera={false}>
-                    <SweepPlayer frames={frameMeshes} paused={false} playheadRef={playheadRef} />
+                    <Model model={model} />
                   </Stage>
-                ) : mesh !== null ? (
-                  <Stage adjustCamera={false}>
-                    <Model mesh={mesh} />
-                  </Stage>
-                ) : null}
-              </CadCanvas>
-
-              {sweepingParam !== null && frameMeshes.length > 0 && (
-                <div className="pointer-events-none absolute bottom-3.5 left-3.5 flex items-baseline gap-2.5 rounded-lg border border-line-soft bg-white/85 px-3.5 py-2 text-ink-soft">
-                  <span className="text-[13px] text-muted">
-                    {formatParamName(sweepingParam)}
-                  </span>
-                  <span ref={sweepValueRef} className="text-base font-bold text-[#9db4ff] tabular-nums" />
-                </div>
-              )}
+                </CadCanvas>
+              ) : null}
 
               {isLoading && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 p-6 text-center text-ink-soft">
@@ -365,13 +378,17 @@ export default function CadModelView({
 
             <CalibrationPanel
               parameters={parameters}
-              paramSweeps={paramSweeps}
               confirmedValues={confirmedValues}
               settingParam={null}
-              sweepingParam={sweepingParam}
               onConfirm={handleConfirmParam}
-              onPreviewSweep={handlePreviewSweep}
               onFinish={() => finishCalibration({ runId })}
+              guides={guides}
+              guidesState={guidesState}
+              onSetAllGuides={setAllGuides}
+              guidesAvailable={(name) => guidesByParam.has(name)}
+              guideShown={guideVisible}
+              onToggleGuides={toggleGuides}
+              onHoverGuides={setHoveredGuideParam}
             />
 
             <RefinementChat
@@ -394,13 +411,21 @@ export default function CadModelView({
               </div>
 
               <div className="relative flex min-h-[420px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white max-lg:h-[560px]">
-                <CadCanvas generating={isLoading} fitKey={designId} fitMesh={mesh}>
-                  {mesh !== null ? (
+                {model !== null ? (
+                  <CadCanvas
+                    generating={isLoading}
+                    fitKey={designId}
+                    fitModel={model}
+                    designId={designId ?? undefined}
+                    guides={guides}
+                    guideVisible={guideVisible}
+                    hoveredGuideParam={hoveredGuideParam}
+                  >
                     <Stage adjustCamera={false}>
-                      <Model mesh={mesh} />
+                      <Model model={model} />
                     </Stage>
-                  ) : null}
-                </CadCanvas>
+                  </CadCanvas>
+                ) : null}
 
                 {isLoading && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 p-6 text-center text-ink-soft">
@@ -414,8 +439,13 @@ export default function CadModelView({
               {phase === "ready" && (
                 <div className="mt-6 flex shrink-0 gap-3">
                   {designId !== null && (
-                    <button type="button" className="btn-secondary" onClick={handleDownloadMesh}>
-                      Download mesh
+                    <button
+                      type="button"
+                      title="Download the loaded model as STL"
+                      onClick={handleDownload}
+                      className="btn-secondary"
+                    >
+                      Download STL
                     </button>
                   )}
                   {finalGuidance && (

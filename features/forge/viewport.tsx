@@ -3,7 +3,6 @@
 import React, {
   Suspense,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -14,23 +13,19 @@ import { Timer } from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import * as THREE from "three";
 
-import { SWEEP_FPS } from "@/lib/config";
-import type { DesignVariant, ForgeIteration, THREE_Group } from "@/lib/types";
+import type { DesignVariant, ForgeIteration, GlbModel, Guide } from "@/lib/types";
+import { createGuidesOverlay, type GuidesOverlay } from "./guides";
 
 /*
   Shared three.js viewport building blocks for the CAD screen: model display
-  (Forge meshes are Z-up), the sweep flipbook player, per-design camera
-  fitting, the main canvas, and the synchronized multi-tile design picker.
+  (Forge meshes are Z-up), per-design camera fitting, the main canvas, and
+  the synchronized multi-tile design picker.
 */
 
-export function Model({ mesh }: { mesh: THREE_Group }) {
-  // Forge renders Z-up; nod up so the model stands upright without manual
-  // rotation.
-  return (
-    <group rotation={[-Math.PI / 2, 0, 0]}>
-      <primitive object={mesh} />
-    </group>
-  );
+export function Model({ model }: { model: GlbModel }) {
+  // The backend's GLB root node pre-applies the Z-up → Y-up rotation, so
+  // the parsed scene mounts as-is.
+  return <primitive object={model.scene} />;
 }
 
 /*
@@ -80,10 +75,10 @@ function createTimerClock(): THREE.Clock {
 */
 function ForgeStudio({
   fitKey,
-  fitMesh,
+  fitModel,
 }: {
   fitKey?: string | null;
-  fitMesh?: THREE_Group | null;
+  fitModel?: GlbModel | null;
 } = {}) {
   const gl = useThree((state) => state.gl);
   const scene = useThree((state) => state.scene);
@@ -112,14 +107,14 @@ function ForgeStudio({
   */
   useEffect(() => {
     const light = keyRef.current;
-    if (!light || !fitMesh) return;
-    fitMesh.traverse((obj) => {
+    if (!light || !fitModel) return;
+    fitModel.scene.traverse((obj) => {
       if ((obj as THREE.Mesh).isMesh) {
         obj.castShadow = true;
         obj.receiveShadow = true;
       }
     });
-    const box = new THREE.Box3().setFromObject(fitMesh);
+    const box = new THREE.Box3().setFromObject(fitModel.scene);
     if (box.isEmpty()) return;
     const sphere = box.getBoundingSphere(new THREE.Sphere());
     const cam = light.shadow.camera;
@@ -133,7 +128,7 @@ function ForgeStudio({
     cam.far = sphere.radius * 4 + light.position.length();
     cam.updateProjectionMatrix();
     light.shadow.needsUpdate = true;
-  }, [fitKey, fitMesh]);
+  }, [fitKey, fitModel]);
 
   return (
     <>
@@ -201,116 +196,22 @@ function LoadingSpinner() {
   );
 }
 
-export interface Playhead {
-  pos: number;
-  index: number;
-}
-
-/*
-  Plays the rendered sweep as a ping-pong animation, stepping one frame every
-  1 / SWEEP_FPS seconds and reversing at both ends. All frame meshes stay
-  mounted; stepping is just a visibility flip. The playhead is written to
-  playheadRef on every render-loop tick so the UI can mirror it without React
-  re-renders.
-*/
-export function SweepPlayer({
-  frames,
-  paused,
-  playheadRef,
-}: {
-  frames: THREE_Group[];
-  paused: boolean;
-  playheadRef: React.MutableRefObject<Playhead>;
-}) {
-  const groupsRef = useRef<(THREE.Group | null)[]>([]);
-  const frameIndexRef = useRef(0);
-  const directionRef = useRef(1);
-  const stepTimerRef = useRef(0);
-
-  useLayoutEffect(() => {
-    frameIndexRef.current = 0;
-    directionRef.current = 1;
-    stepTimerRef.current = 0;
-    groupsRef.current.forEach((group, i) => {
-      if (group) group.visible = i === 0;
-    });
-    playheadRef.current = { pos: 0, index: 0 };
-  }, [frames, playheadRef]);
-
-  useFrame((_, delta) => {
-    if (paused) return;
-    const n = frames.length;
-    if (n < 2) return;
-
-    // Clamp the frame delta and cap the accumulator at one step: after a page
-    // load or tab switch the first delta can span seconds.
-    const step = 1 / SWEEP_FPS;
-    stepTimerRef.current = Math.min(
-      stepTimerRef.current + Math.min(delta, 0.25),
-      step,
-    );
-    if (stepTimerRef.current >= step) {
-      stepTimerRef.current -= step;
-
-      const next = frameIndexRef.current + directionRef.current;
-      if (next >= n || next < 0) {
-        directionRef.current = -directionRef.current;
-        frameIndexRef.current += directionRef.current;
-      } else {
-        frameIndexRef.current = next;
-      }
-
-      for (let i = 0; i < n; i++) {
-        const group = groupsRef.current[i];
-        if (group) group.visible = i === frameIndexRef.current;
-      }
-    }
-
-    // Interpolate from the previous displayed frame to the current one across
-    // the step so the playhead glides between sweep values.
-    const fraction = Math.min(stepTimerRef.current / step, 1);
-    const raw = frameIndexRef.current - directionRef.current * (1 - fraction);
-    playheadRef.current = {
-      pos: Math.min(Math.max(raw, 0), n - 1),
-      index: frameIndexRef.current,
-    };
-  });
-
-  return (
-    <>
-      {frames.map((frame, i) => (
-        <group
-          key={i}
-          ref={(el) => {
-            groupsRef.current[i] = el;
-          }}
-          visible={i === 0}
-        >
-          <Model mesh={frame} />
-        </group>
-      ))}
-    </>
-  );
-}
-
 /*
   Display-space bounds of a decoded Forge mesh, with the Z-up correction
   applied. The radius sets camera fit distances; the center is where the
   model's visual middle sits.
-  The radius sets camera fit distances; the center is where the model's visual
-  middle sits.
 */
-export function meshDisplayBounds(mesh: THREE_Group) {
-  mesh.updateWorldMatrix(true, true);
-  const meshInv = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
+export function meshDisplayBounds(scene: THREE.Object3D) {
+  scene.updateWorldMatrix(true, true);
+  const sceneInv = new THREE.Matrix4().copy(scene.matrixWorld).invert();
   const localBox = new THREE.Box3();
   let hasGeometry = false;
-  mesh.traverse((obj) => {
+  scene.traverse((obj: THREE.Object3D) => {
     if (!((obj as THREE.Mesh).isMesh)) return;
     const geometry = (obj as THREE.Mesh).geometry;
     if (!geometry) return;
     if (!geometry.boundingBox) geometry.computeBoundingBox();
-    const rel = new THREE.Matrix4().multiplyMatrices(meshInv, obj.matrixWorld);
+    const rel = new THREE.Matrix4().multiplyMatrices(sceneInv, obj.matrixWorld);
     const objBox = geometry.boundingBox!.clone().applyMatrix4(rel);
     if (hasGeometry) {
       localBox.union(objBox);
@@ -336,10 +237,10 @@ export function meshDisplayBounds(mesh: THREE_Group) {
 */
 function CameraFit({
   fitKey,
-  mesh,
+  model,
 }: {
   fitKey: string | null;
-  mesh: THREE_Group | null;
+  model: GlbModel | null;
 }) {
   const camera = useThree((state) => state.camera);
   const controls = useThree((state) => state.controls) as
@@ -350,9 +251,9 @@ function CameraFit({
   // Imperative three.js camera/controls mutation is intentional here.
   /* eslint-disable react-hooks/immutability */
   useEffect(() => {
-    if (!mesh || fitKey === null || fittedKeyRef.current === fitKey) return;
+    if (!model || fitKey === null || fittedKeyRef.current === fitKey) return;
     if (!controls) return;
-    const bounds = meshDisplayBounds(mesh);
+    const bounds = meshDisplayBounds(model.scene);
     if (bounds === null) return;
     fittedKeyRef.current = fitKey;
 
@@ -368,8 +269,74 @@ function CameraFit({
 
     controls.target.copy(target);
     controls.update();
-  }, [fitKey, mesh, camera, controls]);
+  }, [fitKey, model, camera, controls]);
   /* eslint-enable react-hooks/immutability */
+
+  return null;
+}
+
+/** Parametric guides rendered over the model: the backend sources the guide
+ *  geometry from the same dimensions the parameters control, so the lines
+ *  always agree with the current revision. Visibility is baseline
+ *  show-all plus a hovered parameter override — hiding/revealing is a
+ *  per-line `.visible` + material swap on the already-built overlay, so
+ *  hover needs no rebuild. */
+function Guides({
+  guides,
+  designId,
+  model,
+  visible,
+  hoveredParam,
+}: {
+  guides: Guide[];
+  designId: string | null;
+  model: GlbModel | null;
+  visible: (name: string) => boolean;
+  hoveredParam: string | null;
+}) {
+  const scene = useThree((state) => state.scene);
+  const camera = useThree((state) => state.camera) as THREE.PerspectiveCamera;
+  const viewportHeight = useThree((state) => state.size.height);
+  const overlayRef = useRef<GuidesOverlay | null>(null);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const hoveredRef = useRef(hoveredParam);
+  hoveredRef.current = hoveredParam;
+
+  useEffect(() => {
+    if (scene === null) return;
+    const overlay = createGuidesOverlay();
+    scene.add(overlay.group);
+    overlayRef.current = overlay;
+    return () => {
+      overlay.dispose();
+      scene.remove(overlay.group);
+      overlayRef.current = null;
+    };
+  }, [scene]);
+
+  useEffect(() => {
+    overlayRef.current?.setGuides(guides);
+  }, [guides, designId, model]);
+
+  // Hover and per-param toggles never rebuild the overlay; they only flip
+  // visibility and swap to the brighter hover material.
+  useEffect(() => {
+    const overlay = overlayRef.current;
+    if (overlay === null) return;
+    const visibleBase = visibleRef.current;
+    const hovered = hoveredRef.current;
+    overlay.refresh({
+      hoveredParam: hovered,
+      visible: (param) => visibleBase(param) || hovered === param,
+    });
+  }, [guides, hoveredParam, visible, model]);
+
+  // Guides are sized in screen pixels — rescale every frame against the
+  // live camera so they stay a constant pixel size at any zoom.
+  useFrame(() => {
+    overlayRef.current?.update(camera, viewportHeight);
+  });
 
   return null;
 }
@@ -378,24 +345,42 @@ export function CadCanvas({
   children,
   generating,
   fitKey,
-  fitMesh,
+  fitModel,
+  designId,
+  guides,
+  guideVisible,
+  hoveredGuideParam,
 }: {
   children: React.ReactNode;
   generating: boolean;
   fitKey: string | null;
-  fitMesh: THREE_Group | null;
+  fitModel: GlbModel | null;
+  designId?: string | null;
+  guides?: Guide[];
+  guideVisible?: (name: string) => boolean;
+  hoveredGuideParam?: string | null;
 }) {
+  const model = fitModel;
   return (
     <CanvasErrorBoundary>
       <Canvas
-        shadows={{ type: THREE.PCFSoftShadowMap }}
+        shadows={{ type: THREE.PCFShadowMap }}
         camera={{ position: [12, 9, 18], fov: 45, near: 0.01, far: 2000 }}
         style={{ width: "100%", height: "100%", background: "#ffffff" }}
         onCreated={(state) => state.set({ clock: createTimerClock() })}
       >
-        <ForgeStudio fitKey={fitKey} fitMesh={fitMesh} />
+        <ForgeStudio fitKey={fitKey} fitModel={fitModel} />
         <Suspense fallback={generating ? <LoadingSpinner /> : null}>{children}</Suspense>
-        <CameraFit fitKey={fitKey} mesh={fitMesh} />
+        <CameraFit fitKey={fitKey} model={model} />
+        {guides !== undefined ? (
+          <Guides
+            guides={guides}
+            designId={designId ?? model?.scene.name ?? null}
+            model={model}
+            visible={guideVisible ?? (() => true)}
+            hoveredParam={hoveredGuideParam ?? null}
+          />
+        ) : null}
         <OrbitControls makeDefault enableDamping dampingFactor={0.1} minDistance={0.001} maxDistance={Infinity} />
       </Canvas>
     </CanvasErrorBoundary>
@@ -432,12 +417,12 @@ interface OrbitState {
   camera pose; all other tiles copy it every frame — live during the drag.
 */
 function PickerModel({
-  mesh,
+  model,
   center,
   orbit,
   tileId,
 }: {
-  mesh: THREE_Group;
+  model: GlbModel;
   center: THREE.Vector3;
   orbit: OrbitState;
   tileId: string;
@@ -498,9 +483,8 @@ function PickerModel({
   return (
     <group ref={spinRef}>
       <group position={[-center.x, -center.y, -center.z]}>
-        <group rotation={[-Math.PI / 2, 0, 0]}>
-          <primitive object={mesh} />
-        </group>
+        {/* The backend's GLB root pre-applies the Z-up → Y-up rotation. */}
+        <primitive object={model.scene} />
       </group>
     </group>
   );
@@ -537,7 +521,7 @@ export function DesignPicker({
   const variantBounds = useMemo(
     () =>
       variants.map((variant) =>
-        variant.mesh !== null ? meshDisplayBounds(variant.mesh) : null,
+        variant.mesh !== null ? meshDisplayBounds(variant.mesh.scene) : null,
       ),
     [variants],
   );
@@ -646,14 +630,14 @@ export function DesignPicker({
                       frameloop={visible ? "always" : "never"}
                       camera={cameraConfig}
                       dpr={[1, 1.5]}
-                      shadows={{ type: THREE.PCFSoftShadowMap }}
+                      shadows={{ type: THREE.PCFShadowMap }}
                       style={{ width: "100%", height: "100%", background: "#ffffff" }}
                       onCreated={(state) => state.set({ clock: createTimerClock() })}
                     >
-                      <ForgeStudio fitKey={variant.designId} fitMesh={variant.mesh} />
+                      <ForgeStudio fitKey={variant.designId} fitModel={variant.mesh} />
                       <Suspense fallback={null}>
                         <PickerModel
-                          mesh={variant.mesh!}
+                          model={variant.mesh!}
                           center={bounds.center}
                           orbit={orbit}
                           tileId={variant.designId}

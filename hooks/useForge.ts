@@ -2,28 +2,28 @@
 
 import { useCallback, useRef, useState } from "react";
 
-import {
-  SWEEP_RENDER_STEPS,
-} from "@/lib/config";
-import { deriveLowHigh, midpoint, isCalibratable } from "@/lib/forgeParams";
+import { isCalibratable } from "@/lib/forgeParams";
 import {
   createDesign,
   duplicateDesign,
   stopDesign,
   sendDesignMessage,
   subscribeDesignStream,
-  getDesignGeometry,
-  patchParameters,
+  fetchDesignGeometry,
+  setParameters as persistParameters,
+  ParameterErrors,
   getDesign,
+  type GeometryFetch,
 } from "@/lib/forgeClient";
-import { MESH_QUALITY, meshGeometryToGroup } from "@/lib/geometryBridge";
+import { parseGlbCached } from "@/lib/glb";
 import { recoverDesignIdForRun } from "@/lib/recoverDesign";
 import type {
   ForgeIteration,
-  ForgeParameter,
   ForgePhase,
-  ParamSweep,
-  THREE_Group,
+  GeometrySummary,
+  GlbModel,
+  Guide,
+  Parameter,
 } from "@/lib/types";
 
 /*
@@ -60,20 +60,6 @@ function readDesignStore(): Record<string, StoredDesignState> {
   } catch {
     return {};
   }
-}
-
-/** Fetch a design's lowered geometry (stored parameter values, render
- *  tier baked by the backend) and mesh it locally in the geometry worker.
- *  `values` optionally merges ephemeral overrides on top of the stored
- *  parameter values for this request only — Forge stores nothing.
- *  Returns a scene Group, or null when nothing is renderable. */
-async function fetchMesh(designId: string, values?: Record<string, number>): Promise<THREE_Group | null> {
-    const geometry = await getDesignGeometry(designId, {
-        ...(values !== undefined ? { values } : {}),
-        quality: MESH_QUALITY,
-    });
-    if (geometry === null) return null;
-    return meshGeometryToGroup(geometry);
 }
 
 function writeDesignStore(store: Record<string, StoredDesignState>) {
@@ -173,10 +159,10 @@ export function clearStoredDesignState(runId: string | null) {
 */
 export function useForge() {
   const [phase, setPhase] = useState<ForgePhase>("idle");
-  const [mesh, setMesh] = useState<THREE_Group | null>(null);
+  const [model, setModel] = useState<GlbModel | null>(null);
+  const [guides, setGuides] = useState<Guide[]>([]);
   const [error, setError] = useState("");
-  const [parameters, setParameters] = useState<ForgeParameter[]>([]);
-  const [paramSweeps, setParamSweeps] = useState<Record<string, ParamSweep>>({});
+  const [parameters, setParameters] = useState<Parameter[]>([]);
   const [confirmedValues, setConfirmedValues] = useState<
     Record<string, number>
   >({});
@@ -188,7 +174,7 @@ export function useForge() {
   // Feedback lineage, oldest first — drives the iteration timeline.
   const [iterations, setIterations] = useState<ForgeIteration[]>([]);
   const [variants, setVariants] = useState<
-    { designId: string; mesh: THREE_Group | null; status: "generating" | "preview" | "ready"; error: string | null }[]
+    { designId: string; mesh: GlbModel | null; status: "generating" | "preview" | "ready"; error: string | null }[]
   >([]);
   const [busy, setBusy] = useState(false);
 
@@ -229,7 +215,7 @@ export function useForge() {
   );
 
   const patchVariant = useCallback(
-    (variantId: string, patch: Partial<{ mesh: THREE_Group | null; status: "generating" | "preview" | "ready"; error: string | null }>) => {
+    (variantId: string, patch: Partial<{ mesh: GlbModel | null; status: "generating" | "preview" | "ready"; error: string | null }>) => {
       setVariants((prev) =>
         prev.map((v) => (v.designId === variantId ? { ...v, ...patch } : v)),
       );
@@ -239,6 +225,84 @@ export function useForge() {
   const removeVariant = useCallback((variantId: string) => {
     setVariants((prev) => prev.filter((v) => v.designId !== variantId));
   }, []);
+
+  // Track the geometry revision the current model was parsed from, so
+  // subsequent geometry fetches can 304 against it.
+  const revisionRef = useRef<string | null>(null);
+
+  /** Load the geometry for a design, honoring the revision the client
+   *  already knows so unchanged models cost a 304. Several callers can
+   *  fire for the same rebuild (a streamed `geometry` alarm and the
+   *  REST adoption racing); an in-flight fetch for the same
+   *  design+revision is shared instead of downloading the GLB twice. */
+  const inFlightGeometry = useRef<Map<string, Promise<GeometryFetch>>>(new Map());
+  const fetchGeometry = useCallback(async (designId: string, knownRevision?: string) => {
+    const key = `${designId}@${knownRevision ?? ""}`;
+    const inFlight = inFlightGeometry.current.get(key);
+    if (inFlight !== undefined) return inFlight;
+    const promise = (async () => {
+      try {
+        return await fetchDesignGeometry(designId, knownRevision);
+      } finally {
+        inFlightGeometry.current.delete(key);
+      }
+    })();
+    inFlightGeometry.current.set(key, promise);
+    return promise;
+  }, []);
+
+  /**
+    Fetch, parse and adopt the latest geometry for a design. With
+    `apply` (the current design path) the parsed model and the design's
+    guides replace the viewport state directly; with `apply: false`
+    (variant tile path) nothing global is touched and the parsed model
+    is only returned for the caller's tile. Resolves null when the
+    design/item disappears from the flow's error contract (thrown
+    network errors propagate to the caller).
+  */
+  const loadGeometry = useCallback(
+    async (
+      targetDesignId: string,
+      opts: { apply?: boolean; signal?: AbortSignal; knownRevision?: string } = {},
+    ): Promise<GlbModel | null> => {
+      const apply = opts.apply ?? true;
+      const summary = await getDesign(targetDesignId);
+      if (opts.signal?.aborted) return null;
+      if (summary === null) return null;
+      const summaryGuides = summary.geometry?.guides ?? [];
+      const fetch = await fetchGeometry(
+        targetDesignId,
+        opts.knownRevision ?? revisionRef.current ?? undefined,
+      );
+      if (opts.signal?.aborted) return null;
+      if (fetch.status === "ok") {
+        const parsed = await parseGlbCached(fetch.revision, fetch.blob, targetDesignId);
+        if (apply) {
+          setModel(parsed);
+          setGuides(summaryGuides);
+          revisionRef.current = fetch.revision;
+        }
+        return parsed;
+      }
+      if (fetch.status === "none") {
+        if (apply) {
+          setModel(null);
+          setGuides([]);
+          revisionRef.current = null;
+        }
+        return null;
+      }
+      // "unchanged": the revision we already know is still current. The
+      // cached parse is only valid when a model genuinely exists — a
+      // caller with no model yet must not adopt an empty buffer parse.
+      if (!apply) return null;
+      const cached = revisionRef.current;
+      if (cached === null) return null;
+      return parseGlbCached(cached, new ArrayBuffer(0), targetDesignId);
+    },
+    [fetchGeometry],
+  );
+
 
   // Rejects the generate() picker park when every variant fails before a pick.
   const allFailedRejectRef = useRef<((reason: Error) => void) | null>(null);
@@ -291,77 +355,27 @@ export function useForge() {
       runId,
     }: {
       designId: string;
-      calibratable: ForgeParameter[];
+      calibratable: Parameter[];
       signal: AbortSignal;
       runId: string | null;
     }) => {
-      const pending = calibratable.filter((p) => !p.modified);
+      const pending = calibratable.filter((p) => !p.set);
       setParameters(calibratable);
       setConfirmedValuesTracked(
         Object.fromEntries(
           calibratable
-            .filter((p) => p.modified)
+            .filter((p) => p.set)
             .map((p) => [p.name, p.value]),
         ) as Record<string, number>,
       );
-      setParamSweeps({});
+      setGuides([]);
+      revisionRef.current = null;
       setPhase("calibrating");
       if (runId) {
         storeDesignState(runId, { designId: calibrationDesignId, phase: "calibrating" });
       }
 
-      const baseMesh = await fetchMesh(calibrationDesignId);
-      if (signal.aborted) return;
-      if (baseMesh !== null) setMesh(baseMesh);
-
-      setStatusMessage("Rendering parameter previews…");
-
-      /*
-        Every pending parameter previews at once — frames within a sweep and
-        sweeps across parameters fan out concurrently, and each sweep
-        publishes the moment its frames land so the UI shows parameters as
-        they finish instead of waiting for the serial pass through them all.
-      */
-      await Promise.all(
-        pending.map(async (param) => {
-          if (signal.aborted) return;
-          const { low, high } = deriveLowHigh(param);
-          const lowMid = midpoint(param.value, low);
-          const highMid = midpoint(param.value, high);
-          const values: number[] = [];
-          for (let s = 0; s < SWEEP_RENDER_STEPS; s++) {
-            values.push(
-              lowMid + ((highMid - lowMid) * s) / (SWEEP_RENDER_STEPS - 1),
-            );
-          }
-          const frames = await Promise.all(
-            values.map(async (value) => {
-              // Preview only: lowered geometry with the sweep value merged in,
-              // meshed in the client worker. Nothing is persisted server-side.
-              try {
-                const geometry = await getDesignGeometry(calibrationDesignId, {
-                  values: { [param.name]: value },
-                  quality: MESH_QUALITY,
-                });
-                return geometry === null ? null : meshGeometryToGroup(geometry);
-              } catch {
-                // A single failed frame (network hiccup, transient 5xx)
-                // shows as a gap; null frames are already tolerated by
-                // useActiveSweep, and null here keeps Promise.all from
-                // aborting the whole sweep batch.
-                return null;
-              }
-            }),
-          );
-          if (signal.aborted) return;
-          const sweep: ParamSweep = {
-            values,
-            frames,
-          };
-          setParamSweeps((prev) => ({ ...prev, [param.name]: sweep }));
-        }),
-      );
-
+      await loadGeometry(calibrationDesignId, { signal });
       setStatusMessage("");
       // The UI drives the rest: confirmParamValue() per parameter and
       // finishCalibration() once every parameter is confirmed.
@@ -400,7 +414,9 @@ export function useForge() {
       setPhase("initializing");
       setError("");
       setStatusMessage("");
-      setMesh(null);
+      setModel(null);
+      setGuides([]);
+      revisionRef.current = null;
       setParameters([]);
       setVariants([]);
       setDesignId(null);
@@ -456,8 +472,8 @@ export function useForge() {
           // the round is still parked on the user's pick.
         };
 
-        // Latest mesh per variant id, so a mid-stream pick can reuse the tile.
-        const variantMeshes = new Map<string, THREE_Group>();
+        // Latest model per variant id, so a mid-stream pick can reuse the tile.
+        const variantMeshes = new Map<string, GlbModel>();
         // Which handoff produced which variant, so the picked design keeps
         // its own handoff for refinement instead of a generic one.
         const variantHandoffs = new Map<string, string>();
@@ -483,38 +499,27 @@ export function useForge() {
             const variantStream = subscribeDesignStream(variantId, child.signal);
             await sendDesignMessage(variantId, handoffMarkdown);
 
-            let variantMesh: THREE_Group | null = null;
+            let variantMesh: GlbModel | null = null;
             for (;;) {
               const { value: ev, done } = await variantStream.next();
               if (done || ev.type === "end") break;
-              if (ev.type === "geometry") {
-                try {
-                  variantMesh = await meshGeometryToGroup(ev.data);
-                  if (variantMesh === null) continue;
-                  variantMeshes.set(variantId, variantMesh);
-                  // Streaming preview: rendered grayed out until the final
-                  // fetch unlocks the tile.
-                  patchVariant(variantId, { mesh: variantMesh, status: "preview" });
-                } catch {
-                  // skip unmeshable frame
-                }
-              } else if (ev.type === "error") {
+              if (ev.type === "error") {
                 throw new Error(ev.data || "Forge error during initial generation");
               }
             }
 
-            const finalVariantMesh = await fetchMesh(variantId);
+            const loaded = await loadGeometry(variantId, { apply: false, signal });
             if (signal.aborted) return;
-            if (finalVariantMesh !== null) {
-              variantMeshes.set(variantId, finalVariantMesh);
-              patchVariant(variantId, { mesh: finalVariantMesh, status: "ready" });
-            }
-            if (finalVariantMesh === null) {
+            if (loaded !== null) {
+              variantMesh = loaded;
+              variantMeshes.set(variantId, variantMesh);
+              patchVariant(variantId, { mesh: variantMesh, status: "ready" });
+            } else {
               throw new Error("Forge did not return a renderable model.");
             }
             okCount++;
             activeVariantIdsRef.current.delete(variantId);
-            return { designId: variantId, mesh: finalVariantMesh };
+            return { designId: variantId, mesh: variantMesh };
           } catch (err) {
             if (variantId !== null) {
               activeVariantIdsRef.current.delete(variantId);
@@ -565,9 +570,12 @@ export function useForge() {
         setSelectedHandoff(
           chosenId !== null ? (variantHandoffs.get(chosenId) ?? null) : null,
         );
-        // Reuse the tile's streamed mesh if it arrived; otherwise the mesh
-        // fetch in the calibration phase provides the first render.
-        setMesh(variantMeshes.get(chosenId ?? "") ?? null);
+        // Reuse the tile's parsed model if it arrived; otherwise the
+        // geometry load in the calibration phase provides the first render.
+        const reused = variantMeshes.get(chosenId ?? "");
+        if (reused !== undefined) {
+          setModel(reused);
+        }
         if (runId && chosenId) {
           // The picked design continues to the design page — once picked the
           // picker never reopens (refine rounds are linear), so the picked
@@ -595,7 +603,7 @@ export function useForge() {
 
         const chosenDesign = await getDesign(chosenId);
         if (signal.aborted) return;
-        const rawParams = chosenDesign?.overview?.parameters ?? [];
+        const rawParams = chosenDesign?.parameters ?? [];
 
         const calibratable = rawParams.filter(isCalibratable);
 
@@ -637,13 +645,12 @@ export function useForge() {
   /*
     Confirming a parameter is immediate: the value is persisted to Forge with
     one merge PATCH (only this key is sent, so concurrent confirmations never
-    clobber each other), the live mesh re-renders with the new value right
-    away, and every calibratable parameter's sweep rebuilds in parallel
-    against the current confirmed set — including parameters the user has
-    not confirmed yet, whose previews would otherwise keep showing the model
-    from before the change. Network failures leave the optimistic local
-    value in place; OK still re-renders the final model from whatever Forge
-    has stored.
+    clobber each other), and the rebuilt GLB is re-fetched against the
+    previously known revision — parameters change the revision, so the 304
+    misses and the new model loads. A fetch that raced the PATCH carries
+    pre-change content; any answer contradicting the PATCH response's stored
+    revision triggers an unconditional refetch. Network failures leave the
+    optimistic local value in place; OK flushes server state on finish.
   */
   const confirmParamValue = useCallback(
     (name: string, value: number) => {
@@ -655,90 +662,72 @@ export function useForge() {
       }
       setConfirmedValuesTracked((prev) => ({ ...prev, [name]: value }));
 
-      // Fetches after every frame worker task so the sweep rebuild below
-      // always starts from a settled, current parameter set.
       void (async () => {
-        let freshParams: ForgeParameter[] | null = null;
         try {
-          const response = await patchParameters(currentDesignId, {
-            [name]: value,
-          });
-          freshParams = response.parameters;
-          setParameters(freshParams);
-        } catch {
-          // Keep the optimistic value; OK flushes server state on finish.
-          freshParams = null;
+          const result = await persistParameters(currentDesignId, { [name]: value });
+          setParameters(result.parameters);
+          const fetch = await fetchGeometry(
+            currentDesignId,
+            revisionRef.current ?? undefined,
+          );
+          if (
+            result.geometry !== null &&
+            ((fetch.status === "ok" && fetch.revision !== result.geometry.revision) ||
+              (fetch.status === "unchanged" &&
+                result.geometry.revision !== revisionRef.current))
+          ) {
+            const retry = await fetchGeometry(currentDesignId);
+            if (retry.status === "ok") {
+              setModel(await parseGlbCached(retry.revision, retry.blob, currentDesignId));
+              setGuides(result.geometry?.guides ?? []);
+              revisionRef.current = retry.revision;
+            } else if (retry.status === "none") {
+              setModel(null);
+              setGuides([]);
+              revisionRef.current = null;
+            }
+          } else if (fetch.status === "ok") {
+            setModel(await parseGlbCached(fetch.revision, fetch.blob, currentDesignId));
+            setGuides(result.geometry?.guides ?? []);
+            revisionRef.current = fetch.revision;
+          } else if (fetch.status === "none") {
+            setModel(null);
+            setGuides([]);
+            revisionRef.current = null;
+          }
+          // A non-stale "unchanged" means the PATCH didn't move the revision
+          // (e.g. the value already equals the stored one) — the current
+          // model is already correct, keep it.
+          if (result.build === null) {
+            setStatusMessage("Change not applied — the design could not be rebuilt");
+          } else if (result.build.ok && result.geometry === null) {
+            setStatusMessage("Rebuild produced no geometry");
+          } else if (!result.build.ok && result.build.errors > 0) {
+            setStatusMessage(
+              result.build.errors === 1
+                ? "Rebuild failed with 1 error"
+                : `Rebuild failed with ${result.build.errors} errors`,
+            );
+          } else {
+            setStatusMessage("");
+          }
+        } catch (err) {
+          if (err instanceof ParameterErrors) {
+            setStatusMessage(err.message);
+            return;
+          }
+          if (err instanceof Error && err.message === "canceled") {
+            return;
+          }
+          setStatusMessage(
+            err instanceof Error && err.message !== "Unauthorized"
+              ? err.message
+              : "Could not apply the change — the model keeps its previous state.",
+          );
         }
-
-        // Live model re-renders with just this override on top — patched
-        // values are already Forge-stored, past confirmations are inherited.
-        try {
-          const liveMesh = await fetchMesh(currentDesignId, { [name]: value });
-          setMesh(liveMesh);
-        } catch {
-          // Live frame loss is non-fatal; the mesh keeps showing its
-          // previous render.
-        }
-
-        // Sweep bounds re-derive from the freshly stored parameters when
-        // the PATCH succeeded (bounds shrink toward the confirmed value);
-        // otherwise the last known parameter list is the best available.
-        const source = freshParams ?? parameters;
-        const confirmed = confirmedValuesRef.current;
-        void Promise.all(
-          source
-            .filter((p) => isCalibratable(p))
-            .map(async (param) => {
-              const confirmedValue = confirmed[param.name];
-              // Confirmed parameters sweep around their set value;
-              // unconfirmed ones sweep around the spec default.
-              const baseValue = confirmedValue ?? param.value;
-              const overwritten: ForgeParameter = {
-                ...param,
-                value: baseValue,
-              };
-              const { low, high } = deriveLowHigh(overwritten);
-              const lowMid = midpoint(baseValue, low);
-              const highMid = midpoint(baseValue, high);
-              const values: number[] = [];
-              for (let s = 0; s < SWEEP_RENDER_STEPS; s++) {
-                values.push(
-                  lowMid + ((highMid - lowMid) * s) / (SWEEP_RENDER_STEPS - 1),
-                );
-              }
-              const frames = await Promise.all(
-                values.map(async (sweepValue) => {
-                  try {
-                    const geometry = await getDesignGeometry(
-                      currentDesignId,
-                      {
-                        // Explicit per-sweep values; patched but
-                        // unconfirmed params inherit Forge's stored value
-                        // (the patch above at the time of writing), so
-                        // only the swept param is overridden per frame.
-                        values: { [param.name]: sweepValue },
-                        quality: MESH_QUALITY,
-                      },
-                    );
-                    return geometry === null
-                      ? null
-                      : meshGeometryToGroup(geometry);
-                  } catch {
-                    return null;
-                  }
-                }),
-              );
-              setParamSweeps((prev) => {
-                return {
-                  ...prev,
-                  [param.name]: { values, frames } satisfies ParamSweep,
-                };
-              });
-            }),
-        );
       })();
     },
-    [designId, parameters],
+    [designId],
   );
 
   const finishCalibration = useCallback(
@@ -748,10 +737,9 @@ export function useForge() {
       setPhase("finalizing");
       setStatusMessage("Applying measurements and rendering the final model…");
       try {
-        // Each parameter was already PATCHed eagerly on confirmation. This
-        // re-render only bakes the stored set into the final tier-1 mesh.
-        const updatedMesh = await fetchMesh(currentDesignId);
-        if (updatedMesh !== null) setMesh(updatedMesh);
+        // Each parameter was already persisted eagerly on confirmation.
+        // This load only bakes the stored set into the final revision.
+        await loadGeometry(currentDesignId);
         setPhase("ready");
         if (runId) {
           storeDesignState(runId, { designId: currentDesignId, phase: "ready" });
@@ -762,7 +750,7 @@ export function useForge() {
       }
       setStatusMessage("");
     },
-    [designId],
+    [designId, loadGeometry],
   );
 
   /** Resolve the parked generate()/rehydrate() with the picked variant id. */
@@ -809,7 +797,7 @@ export function useForge() {
       await Promise.allSettled(
         variantDesignIds.map(async (variantDesignId) => {
           try {
-            let variantMesh = await fetchMesh(variantDesignId);
+            let variantMesh = await loadGeometry(variantDesignId, { apply: false, signal });
 
             if (variantMesh === null && !signal.aborted) {
               // Nothing stored yet — the generation turn may still be live.
@@ -820,20 +808,9 @@ export function useForge() {
                 const { value: ev, done } = await stream.next();
                 if (done || ev.type === "end" || ev.type === "error") break;
                 if (ev.type === "running" && ev.data === false) break;
-                if (ev.type === "geometry") {
-                  try {
-                    const restoredMesh = await meshGeometryToGroup(ev.data);
-                    if (restoredMesh === null) continue;
-                    patchVariant(variantDesignId, {
-                      mesh: restoredMesh,
-                      status: "preview",
-                    });
-                  } catch {
-                    // skip unmeshable frame
-                  }
-                }
               }
-              variantMesh = signal.aborted ? null : await fetchMesh(variantDesignId);
+              if (signal.aborted) return;
+              variantMesh = await loadGeometry(variantDesignId, { apply: false, signal });
             }
 
             if (signal.aborted) return;
@@ -856,7 +833,7 @@ export function useForge() {
       setStatusMessage("");
       return survivors.size > 0 ? [...survivors] : null;
     },
-    [patchVariant, removeVariant],
+    [patchVariant, removeVariant, loadGeometry],
   );
 
   /*
@@ -982,17 +959,16 @@ export function useForge() {
           if (signal.aborted) return false;
         }
 
-        const rawParams = design.overview?.parameters ?? [];
+        const rawParams = design.parameters ?? [];
         const calibratable = rawParams.filter(isCalibratable);
 
         if (calibratable.length === 0) {
-          const readyMesh = await fetchMesh(targetDesignId);
+          const loaded = await loadGeometry(targetDesignId);
           if (signal.aborted) return false;
-          if (readyMesh === null) {
+          if (loaded === null) {
             clearStoredDesignState(runId);
             return false;
           }
-          setMesh(readyMesh);
           setStatusMessage("");
           setPhase("ready");
           return true;
@@ -1049,7 +1025,9 @@ export function useForge() {
 
       setPhase("initializing");
       setError("");
-      setMesh(null);
+      setModel(null);
+      setGuides([]);
+      revisionRef.current = null;
       setParameters([]);
 
       try {
@@ -1073,12 +1051,11 @@ export function useForge() {
         }
         if (signal.aborted) return;
 
-        const mesh = await fetchMesh(copyId);
+        const loaded = await loadGeometry(copyId);
         if (signal.aborted) return;
-        if (mesh === null) {
+        if (loaded === null) {
           throw new Error("Forge did not return a renderable model.");
         }
-        setMesh(mesh);
         setVariants([]);
         setDesignId(copyId);
         setStatusMessage("");
@@ -1104,7 +1081,7 @@ export function useForge() {
         setPhase("calibrating");
         const design = await getDesign(copyId);
         if (signal.aborted) return;
-        const rawParams = design?.overview?.parameters ?? [];
+        const rawParams = design?.parameters ?? [];
         const calibratable = rawParams.filter(isCalibratable);
 
         if (calibratable.length === 0) {
@@ -1149,11 +1126,12 @@ export function useForge() {
     setDesignId(null);
     setSelectedHandoff(null);
     setPhase("idle");
-    setMesh(null);
+    setModel(null);
+    setGuides([]);
+    revisionRef.current = null;
     setError("");
     setStatusMessage("");
     setParameters([]);
-    setParamSweeps({});
     setConfirmedValues({});
     confirmedValuesRef.current = {};
     setIterationsTracked([]);
@@ -1161,7 +1139,8 @@ export function useForge() {
 
   return {
     phase,
-    mesh,
+    model,
+    guides,
     error,
     parameters,
     statusMessage,
@@ -1170,7 +1149,6 @@ export function useForge() {
     iterations,
     variants,
     busy,
-    paramSweeps,
     confirmedValues,
     generate,
     rehydrate,

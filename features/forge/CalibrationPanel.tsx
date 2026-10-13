@@ -1,268 +1,277 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { Parameter } from "@/lib/types";
+import { formatParamName } from "@/lib/forgeParams";
 
-import { formatParamName, formatParamDescription, isBoolean } from "@/lib/forgeParams";
-import type { Guide, Parameter } from "@/lib/types";
+/** One parameter row: description line with the guide control and a reset
+ *  control, then a slider across the allowed range with a numeric companion
+ *  input and the unit. The slider previews while dragging and commits only on
+ *  release; the number input stages the typed text and an OK button (or
+ *  Enter / blur) applies it. Hovering or clicking anywhere in the row selects
+ *  that parameter's guides, deselecting all others (rows without guides do
+ *  the deselecting too — one selection at a time, selection-only). */
+function ParameterRow({
+	parameter,
+	disabled,
+	detail,
+	onConfirm,
+	active,
+	hasGuides,
+	onSelect,
+}: {
+	parameter: Parameter;
+	disabled: boolean;
+	detail: string | null;
+	onConfirm: (value: number) => void;
+	active: boolean;
+	hasGuides: boolean;
+	onSelect: (name: string | null) => void;
+}) {
+	const { min, max, unit, kind } = parameter;
+	const boundedMax = Math.max(max, min + 0.1);
+	// Integers step whole units; lengths/angles/scalars allow the backend's
+	// full precision, so the slider stays fine.
+	const step = kind === "integer" ? 1 : (boundedMax - min) / 1000;
+	// draft: live slider drag or in-progress number typing; pending: a
+	// released value awaiting the PATCH response.
+	const [draft, setDraft] = useState<number | null>(null);
+	const [text, setText] = useState<string | null>(null);
+	const [pending, setPending] = useState<number | null>(null);
+	const shown = draft ?? pending ?? parameter.value;
+	const railRef = useRef<HTMLInputElement>(null);
+	const inputRef = useRef<HTMLInputElement>(null);
+	// The confirmed value is the truth: once it moves, drop the local
+	// overlay. Reset during render per react.dev's "adjusting state when a
+	// prop changes" pattern.
+	const [prevServerValue, setPrevServerValue] = useState(parameter.value);
+	if (prevServerValue !== parameter.value) {
+		setPrevServerValue(parameter.value);
+		setDraft(null);
+		setText(null);
+		setPending(null);
+	}
+	const fill = ((shown - min) / (boundedMax - min)) * 100;
 
-interface CalibrationPanelProps {
-  parameters: Parameter[];
-  confirmedValues: Record<string, number>;
-  settingParam: string | null;
-  onConfirm: (name: string, value: number) => void;
-  onFinish: () => void;
-  /**
-   * The guide count across all parameters — nonzero means the header's
-   * All/None radio group renders and the rows get eye toggles.
-   */
-  guides: Guide[];
-  /** Tri-state of the whole guide set: every shown, every hidden, or mixed. */
-  guidesState: "shown" | "hidden" | "mixed";
-  /** Header radio group — shown/hidden applied to every parameter's guides. */
-  onSetAllGuides?: (shown: boolean) => void;
-  /** True when the parameter has guides attached in the current geometry. */
-  guidesAvailable?: (name: string) => boolean;
-  /** Whether the parameter's guides currently render in the viewport. */
-  guideShown?: (name: string) => boolean;
-  onToggleGuides?: (name: string) => void;
-  /** Hover notifications — null when the pointer leaves all rows. */
-  onHoverGuides?: (name: string | null) => void;
+	const commit = (value: number) => {
+		setDraft(null);
+		setText(null);
+		setPending(value);
+		onConfirm(value);
+	};
+
+	// Native 'change' fires once per gesture with the final dragged value.
+	// React's onChange fires per input tick and can end before the release,
+	// so the commit must come from the browser event, not a React handler.
+	// No deps array: every render re-subscribes with fresh state.
+	useEffect(() => {
+		const rail = railRef.current;
+		if (rail === null) return;
+		const onCommitted = () => {
+			const v = Number(rail.value);
+			if (Number.isFinite(v) && v !== parameter.value) commit(v);
+		};
+		rail.addEventListener("change", onCommitted);
+		return () => rail.removeEventListener("change", onCommitted);
+	});
+
+	const commitText = () => {
+		if (text === null) return;
+		const parsed = Number(text.replace(",", "."));
+		if (!Number.isFinite(parsed)) {
+			setText(null);
+			return;
+		}
+		const bounded = Math.min(boundedMax, Math.max(min, parsed));
+		const value = kind === "integer" ? Math.round(bounded) : bounded;
+		if (value !== parameter.value) {
+			commit(value);
+		} else {
+			setText(null);
+		}
+	};
+
+	const shownText =
+		text !== null
+			? text
+			: Number.isInteger(pending ?? parameter.value)
+				? String(pending ?? parameter.value)
+				: (pending ?? parameter.value).toFixed(2);
+
+	return (
+		<div
+			// Row-wide selection: hovering or clicking anywhere picks this
+			// parameter's guides and deselects every other parameter's.
+			className="flex cursor-pointer flex-col gap-1 rounded-lg border border-[#e4e7eb] bg-white px-3 py-2.5 hover:border-[#2448b8]"
+			onMouseEnter={() => onSelect(parameter.name)}
+			onClick={() => onSelect(parameter.name)}
+		>
+			{/* Reset appears/disappears per value; the guide control only for
+			    rows that actually have guides — the right slot absorbs both so
+			    rows keep a stable label line. */}
+			<div className="flex items-center justify-between gap-2">
+				<span className="min-w-0 truncate text-[13px] leading-snug text-[#30343a]" title={parameter.description}>
+					{formatParamName(parameter.name)}
+				</span>
+				<span className="flex shrink-0 items-center justify-end gap-2">
+					{parameter.set ? (
+						<button
+							type="button"
+							onClick={() => {
+								setDraft(null);
+								setPending(parameter.default);
+								onConfirm(parameter.default);
+							}}
+							disabled={disabled}
+							className="rounded bg-transparent px-1 text-[11px] text-[#616975] transition-colors hover:bg-[#eef2fb] hover:text-[#20242a] disabled:opacity-40"
+						>
+							reset
+						</button>
+					) : null}
+					{hasGuides ? (
+						<button
+							type="button"
+							// Selection-only control: it never toggles off. The one
+							// active set is replaced by hovering/clicking any other
+							// row, so there is no separate hide action to name.
+							onClick={() => onSelect(parameter.name)}
+							title="Show guides"
+							className={active
+								? "rounded bg-transparent px-1 text-[11px] font-medium text-[#1d3a99] hover:bg-[#eef2fb]"
+								: "rounded bg-transparent px-1 text-[11px] text-[#616975] hover:bg-[#eef2fb] hover:text-[#1d3a99]"}
+							disabled={disabled}
+						>
+							show guide
+						</button>
+					) : null}
+				</span>
+			</div>
+			<div className="flex items-center gap-1.5">
+				<input
+					ref={railRef}
+					type="range"
+					className="forge-slider min-w-0 flex-1"
+					min={min}
+					max={boundedMax}
+					step={step}
+					value={shown}
+					// Change-drag preview only — the commit listener above
+					// sends the PATCH when the gesture completes.
+					style={{ "--fill": `${fill}%` } as React.CSSProperties}
+					disabled={disabled}
+					onChange={(e) => setDraft(Number(e.target.value))}
+				/>
+				<input
+					ref={inputRef}
+					type="number"
+					className="forge-number w-14 shrink-0 rounded border border-[#cbd0d6] bg-transparent px-1.5 py-0.5 text-right text-xs text-[#20242a] focus:border-transparent focus:outline-2 focus:outline-[#4d72df]"
+					min={min}
+					max={boundedMax}
+					step={step}
+					value={shownText}
+					disabled={disabled}
+					onChange={(e) => setText(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") {
+							e.preventDefault();
+							commitText();
+							inputRef.current?.blur();
+						} else if (e.key === "Escape") {
+							setText(null);
+							inputRef.current?.blur();
+						}
+					}}
+				/>
+				{/* The OK button applies the typed text; without typed text it
+				    stays inert. Always rendered so the row width is stable. */}
+				<button
+					type="button"
+					title="Apply the typed value"
+					onClick={commitText}
+					disabled={disabled || text === null || text.trim() === ""}
+					className="shrink-0 rounded-md bg-transparent px-2 py-0.5 text-[11px] font-semibold text-[#30343a] ring-1 ring-[#cbd0d6] transition-colors hover:bg-[#eef2fb] hover:text-[#1d3a99] disabled:cursor-not-allowed disabled:opacity-40"
+				>
+					OK
+				</button>
+				{/* "w-6" is "deg"'s measured width at this 12px face — every
+				    row reserves it so all sliders stay the same length. */}
+				<span className="w-6 shrink-0 text-right text-[12px] text-[#616975]">
+					{unit.trim()}
+				</span>
+			</div>
+			{detail !== null ? (
+				<p className="text-[11px] text-red-500">{detail}</p>
+			) : null}
+		</div>
+	);
 }
 
+interface CalibrationPanelProps {
+	parameters: Parameter[];
+	confirmedValues: Record<string, number>;
+	settingParam: string | null;
+	onConfirm: (parameter: Parameter, value: number) => void;
+	onFinish: () => void;
+	/** The parameter whose guides are currently shown (null = none). */
+	activeParam: string | null;
+	/** Selects a parameter's guides (deselecting all others) or, with
+	 *  null, deselects everything. */
+	onSelectGuides: (name: string | null) => void;
+	guidesAvailable: (name: string) => boolean;
+}
+
+/** The calibrate panel: every declared parameter in one scrollable list,
+ *  with per-value commit semantics (slider on release, typed value via
+ *  OK/Enter/blur), unit display, per-value reset and a row-level
+ *  show-guide control on the label line. The footer button renders the
+ *  final model. */
 export default function CalibrationPanel({
-  parameters,
-  confirmedValues,
-  settingParam,
-  onConfirm,
-  onFinish,
-  guides,
-  guidesState,
-  onSetAllGuides,
-  guidesAvailable,
-  guideShown,
-  onToggleGuides,
-  onHoverGuides,
+	parameters,
+	confirmedValues,
+	settingParam,
+	onConfirm,
+	onFinish,
+	activeParam,
+	onSelectGuides,
+	guidesAvailable,
 }: CalibrationPanelProps) {
-  /*
-    Values stay local only while editing — a typed number commits on blur or
-    Enter, so partial input never lands in the state mid-editing. The commit
-    itself is immediate: the value is PATCHed to Forge and the model
-    re-renders right away, and OK just bakes the final render.
-  */
-  const [draftValues, setDraftValues] = useState<Record<string, string>>({});
-
-  /*
-    Seed each input from the authoritative value: the confirmed value if the
-    user already set it (survives re-entry and refreshes), otherwise the
-    spec default — inputs never reset to anything else. Derived during
-    render so newly arriving parameters show a value immediately.
-  */
-  const seeded = useMemo(() => {
-    const next: Record<string, string> = {};
-    for (const param of parameters) {
-      const effective = confirmedValues[param.name] ?? param.value;
-      next[param.name] =
-        draftValues[param.name] ?? (effective != null ? String(effective) : "");
-    }
-    return next;
-  }, [parameters, confirmedValues, draftValues]);
-
-  function commitParam(param: Parameter, raw: string | undefined) {
-    if (settingParam !== null) return;
-    const value =
-      raw === undefined || raw === ""
-        ? param.value
-        : isBoolean(param)
-          ? raw === "1"
-            ? 1
-            : 0
-          : parseFloat(raw);
-    if (!isBoolean(param) && (!isFinite(value) || value <= 0)) return;
-    onConfirm(param.name, value);
-    // Keep the input exactly where the user set it.
-    setDraftValues((prev) => ({ ...prev, [param.name]: String(value) }));
-  }
-
-  const setCount = Object.keys(confirmedValues).length;
-
-  /*
-    On wide screens the panel is capped to its row height; the parameter list
-    is the only scroller with the heading above and the OK footer pinned, so
-    finishing never requires scrolling the page. When stacked it grows with
-    content and the page scrolls normally.
-  */
-  return (
-    <div className="flex min-h-0 flex-col gap-4 rounded-xl border border-line p-4.5 pr-5 lg:w-[380px] lg:shrink-0">
-      <div className="flex items-baseline justify-between gap-2 lg:shrink-0">
-        <h2 className="mb-1.5 text-lg">Calibrate the model</h2>
-        {guides.length > 0 ? (
-          <div className="flex shrink-0 items-center gap-1 pb-1.5">
-            <span className="text-[11px] text-muted">Guides</span>
-            <div
-              className="flex gap-0.5 rounded-lg border border-line-soft bg-white p-0.5"
-              role="radiogroup"
-              aria-label="Guide visibility"
-            >
-              {[
-                { id: "shown", label: "All", title: "Show every guide in the viewport" },
-                { id: "hidden", label: "None", title: "Hide every guide in the viewport" },
-              ].map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={guidesState === s.id}
-                  title={s.title}
-                  onClick={() => onSetAllGuides?.(s.id === "shown")}
-                  className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-none transition-colors ${
-                    guidesState === s.id
-                      ? "bg-yellow-500 text-black"
-                      : guidesState === "mixed"
-                        ? "text-ink-soft hover:bg-[#f3f5f8]"
-                        : "text-muted hover:bg-[#f3f5f8]"
-                  }`}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
-
-      <div className="flex min-h-0 flex-col gap-3.5 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain">
-        {parameters.map((param) => {
-          const confirmed = confirmedValues[param.name];
-          const bool = isBoolean(param);
-          const draft = seeded[param.name] ?? "";
-          const setNow = confirmed !== undefined;
-          const hasGuides = guidesAvailable?.(param.name) ?? false;
-
-          return (
-            <div
-              key={param.name}
-              className={`flex flex-col gap-2 rounded-[10px] border p-3 px-3.5 ${
-                setNow ? "border-[#bfe3c4] bg-[#f4fbf6]" : "border-line-soft"
-              }`}
-              onMouseEnter={() => onHoverGuides?.(param.name)}
-              onMouseLeave={() => onHoverGuides?.(null)}
-            >
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-[15px] font-bold text-ink">{formatParamName(param.name)}</span>
-                {hasGuides ? (
-                  <button
-                    type="button"
-                    className="shrink-0 text-base leading-none text-yellow-500 transition-colors hover:text-yellow-400"
-                    onClick={() => onToggleGuides?.(param.name)}
-                    title={
-                      guideShown?.(param.name) === false
-                        ? `Show guides for ${formatParamName(param.name)}`
-                        : `Hide guides for ${formatParamName(param.name)}`
-                    }
-                    aria-pressed={guideShown?.(param.name) !== false}
-                    aria-label={
-                      guideShown?.(param.name) === false
-                        ? `Show guides for ${formatParamName(param.name)}`
-                        : `Hide guides for ${formatParamName(param.name)}`
-                    }
-                  >
-                    {guideShown?.(param.name) === false ? "○" : "●"}
-                  </button>
-                ) : setNow ? (
-                  <span className="text-[13px] font-bold whitespace-nowrap text-[#1d7a34] tabular-nums">
-                    {bool
-                      ? confirmed === 1
-                        ? "Enabled"
-                        : "Disabled"
-                      : `${Number(confirmed).toFixed(1)} mm`}
-                  </span>
-                ) : (
-                  <span className="text-xs text-[#8a93a1]">Tap OK when the value looks right</span>
-                )}
-              </div>
-
-              {param.description && (
-                <p className="m-0 text-[15px] leading-relaxed text-muted">
-                  {formatParamDescription(param.description)}
-                </p>
-              )}
-
-              {bool ? (
-                <label className="flex cursor-pointer items-center gap-2.5 text-[15px]">
-                  <input
-                    type="checkbox"
-                    checked={draft === "1"}
-                    onChange={(e) => {
-                      const next = e.target.checked ? "1" : "0";
-                      setDraftValues((prev) => ({ ...prev, [param.name]: next }));
-                      commitParam(param, next);
-                    }}
-                  />
-                  Enabled
-                </label>
-              ) : (
-                <div className="flex items-center gap-2.5">
-                  <input
-                    type="number"
-                    className="min-w-0 flex-1 rounded-lg border border-[#cbd0d6] bg-white px-2.5 py-1.5 text-sm"
-                    value={draft}
-                    onChange={(e) =>
-                      setDraftValues((prev) => ({ ...prev, [param.name]: e.target.value }))
-                    }
-                    onBlur={() => commitParam(param, seeded[param.name])}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        commitParam(param, seeded[param.name]);
-                      }
-                    }}
-                    placeholder={param.value != null ? String(param.value) : "e.g. 12.5"}
-                    min="0.001"
-                    step="any"
-                    aria-label={`${formatParamName(param.name)} measurement in millimetres`}
-                  />
-                  <button
-                    type="button"
-                    className="shrink-0 rounded-[10px] bg-[#e7e9ed] px-2.5 py-1 text-sm text-ink-soft hover:bg-[#d8dce2]"
-                    onClick={() => {
-                      setDraftValues((prev) => ({
-                        ...prev,
-                        [param.name]: param.value != null ? String(param.value) : "",
-                      }));
-                      if (confirmedValues[param.name] !== undefined) {
-                        onConfirm(param.name, param.value);
-                      }
-                    }}
-                    disabled={
-                      settingParam !== null ||
-                      (confirmedValues[param.name] === undefined &&
-                        draft === (param.value != null ? String(param.value) : ""))
-                    }
-                    title={`Reset to default (${param.value != null ? param.value : "—"})`}
-                    aria-label={`Reset ${formatParamName(param.name)} to its default value`}
-                  >
-                    ↺
-                  </button>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="flex items-center gap-4 lg:shrink-0">
-        <button
-          type="button"
-          className="bg-brand px-4 py-1.5 text-sm font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] hover:bg-brand-dark"
-          onClick={onFinish}
-          disabled={settingParam !== null}
-        >
-          OK — render final model
-        </button>
-        <span className="text-[13px] text-[#8a93a1]">
-          {setCount} of {parameters.length} set
-        </span>
-      </div>
-    </div>
-  );
+	return (
+		<div className="flex w-[21rem] flex-col gap-2.5 rounded-xl border border-[#e1e4e8] bg-[#f7f8fa] p-3 shadow-sm">
+			<div>
+				<h2 className="mb-1 text-[15px] font-semibold">
+					Calibrate the model
+				</h2>
+				<p className="text-[12px] leading-[1.45] text-[#616975]">
+					Set how the parts fit together
+				</p>
+			</div>
+			<div className="flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
+				{parameters.map((parameter) => (
+					<ParameterRow
+						key={parameter.name}
+						parameter={parameter}
+						disabled={settingParam !== null}
+						detail={null}
+						onConfirm={(value) => onConfirm(parameter, value)}
+						active={activeParam === parameter.name}
+						hasGuides={guidesAvailable(parameter.name)}
+						onSelect={onSelectGuides}
+					/>
+				))}
+			</div>
+			<div className="flex items-center justify-between gap-2 pt-0.5">
+				<span className="text-[12px] text-[#616975]">
+					{
+						parameters.filter(
+							(parameter) => confirmedValues[parameter.name] !== undefined,
+						).length
+					}{" "}
+					of {parameters.length} set
+				</span>
+				<button type="button" onClick={onFinish}>
+					OK — render final model
+				</button>
+			</div>
+		</div>
+	);
 }

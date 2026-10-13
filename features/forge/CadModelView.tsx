@@ -61,10 +61,12 @@ export default function CadModelView({
     error,
     parameters,
     statusMessage,
+    buildReport,
     variants,
     designId,
     selectedHandoff,
     busy,
+    settingParam,
     confirmedValues,
     generate,
     rehydrate,
@@ -152,6 +154,9 @@ export default function CadModelView({
   // Calibration input is awaiting the user exactly during the calibrating phase.
   const awaitingInput = phase === "calibrating";
   const isLoading = phase === "initializing" || phase === "finalizing";
+  // From the moment a param change is applied until the rebuilt model is
+  // shown, the model is greyed out (dimmed) instead of spinning.
+  const modelPending = (busy || settingParam !== null) && !isLoading;
 
   let spinnerLabel = statusMessage;
   if (phase === "initializing" && spinnerLabel === "") {
@@ -161,30 +166,17 @@ export default function CadModelView({
   }
 
   /*
-    Guides visibility: a global on/off baseline (hidden by default) plus an
-    optional explicit per-parameter override (undefined = follow the
-    baseline), and a hover that previews/brightens that parameter's guides.
-    All reset with the design switch.
+    Guides visibility: single selection. Active guides are shown; every
+    other parameter's are hidden (null = none shown). The panel sets this
+    on row hover or click. Reset with the design switch.
   */
-  const [guidesOn, setGuidesOn] = useState(false);
-  const [guideOverrides, setGuideOverrides] = useState<Record<string, boolean>>({});
-  const [hoveredGuideParam, setHoveredGuideParam] = useState<string | null>(null);
+  const [activeGuideParam, setActiveGuideParam] = useState<string | null>(null);
   const guideVisible = useCallback(
-    (name: string) => guideOverrides[name] ?? guidesOn,
-    [guideOverrides, guidesOn],
+    (name: string) => name === activeGuideParam,
+    [activeGuideParam],
   );
-  const toggleGuides = useCallback((name: string) => {
-    setGuideOverrides((prev) => ({ ...prev, [name]: !(prev[name] ?? guidesOn) }));
-  }, [guidesOn]);
-  const setAllGuides = useCallback((shown: boolean) => {
-    // Like a tri-state "select all" checkbox: overrides keep expressing
-    // the mixed state, so they must clear on the way to either extreme.
-    setGuideOverrides({});
-    setGuidesOn(shown);
-  }, []);
-
-  // Guides are keyed by parameter name for the panel's per-row toggles and
-  // the viewport's hover matching.
+  // Guides are keyed by parameter name for the panel's per-row disc and
+  // the viewport's matching.
   const guidesByParam = useMemo(() => {
     const map = new Map<string, Guide[]>();
     for (const g of guides) {
@@ -194,21 +186,12 @@ export default function CadModelView({
     }
     return map;
   }, [guides]);
-  // Tri-state for the header toggle: shown only when every guide-bearing
-  // parameter is visible, hidden only when none are, mixed otherwise.
-  const guidesState = useMemo<"shown" | "hidden" | "mixed">(() => {
-    const names = [...guidesByParam.keys()];
-    const shownCount = names.filter((n) => guideVisible(n)).length;
-    return shownCount === 0 ? "hidden" : shownCount === names.length ? "shown" : "mixed";
-  }, [guideVisible, guidesByParam]);
 
-  // A design switch invalidates the per-param overrides and any hover.
+  // A design switch invalidates the active guide selection.
   const [prevDesignId, setPrevDesignId] = useState(designId);
   if (prevDesignId !== designId) {
     setPrevDesignId(designId);
-    setGuidesOn(false);
-    setGuideOverrides({});
-    setHoveredGuideParam(null);
+    setActiveGuideParam(null);
   }
 
   function handleConfirmParam(paramName: string, value: number) {
@@ -359,9 +342,8 @@ export default function CadModelView({
                   designId={designId ?? undefined}
                   guides={guides}
                   guideVisible={guideVisible}
-                  hoveredGuideParam={hoveredGuideParam}
                 >
-                  <Stage adjustCamera={false}>
+                  <Stage adjustCamera={false} center={{ disable: true }}>
                     <Model model={model} />
                   </Stage>
                 </CadCanvas>
@@ -374,21 +356,31 @@ export default function CadModelView({
                   <p className="mt-1.5 text-[13px] text-[#8a93a1]">This can take a minute while Forge works.</p>
                 </div>
               )}
+
+              {modelPending && (
+                <div className="pointer-events-none absolute inset-0 bg-white/60" title="Applying the change…">
+                  <p className="sr-only">Applying the change…</p>
+                </div>
+              )}
             </div>
 
+            {statusMessage !== "" ? (
+              <p className="shrink-0 text-[12px] leading-snug text-red-600">{statusMessage}</p>
+            ) : null}
+            {buildReport && buildReport.trim() !== "" ? (
+              <pre className="shrink-0 max-h-40 overflow-y-auto rounded-md border border-red-200 bg-red-50 p-2 text-left font-mono text-[11px] leading-snug whitespace-pre-wrap text-red-700">
+                {buildReport}
+              </pre>
+            ) : null}
             <CalibrationPanel
               parameters={parameters}
               confirmedValues={confirmedValues}
-              settingParam={null}
-              onConfirm={handleConfirmParam}
+              settingParam={settingParam ?? (busy ? "busy" : null)}
+              onConfirm={(parameter, value) => handleConfirmParam(parameter.name, value)}
               onFinish={() => finishCalibration({ runId })}
-              guides={guides}
-              guidesState={guidesState}
-              onSetAllGuides={setAllGuides}
+              activeParam={activeGuideParam}
+              onSelectGuides={setActiveGuideParam}
               guidesAvailable={(name) => guidesByParam.has(name)}
-              guideShown={guideVisible}
-              onToggleGuides={toggleGuides}
-              onHoverGuides={setHoveredGuideParam}
             />
 
             <RefinementChat
@@ -419,9 +411,8 @@ export default function CadModelView({
                     designId={designId ?? undefined}
                     guides={guides}
                     guideVisible={guideVisible}
-                    hoveredGuideParam={hoveredGuideParam}
                   >
-                    <Stage adjustCamera={false}>
+                    <Stage adjustCamera={false} center={{ disable: true }}>
                       <Model model={model} />
                     </Stage>
                   </CadCanvas>
@@ -432,6 +423,12 @@ export default function CadModelView({
                     <div className="cad-spinner" />
                     <p>{spinnerLabel}</p>
                     <p className="mt-1.5 text-[13px] text-[#8a93a1]">This can take a minute while Forge works.</p>
+                  </div>
+                )}
+
+                {modelPending && (
+                  <div className="pointer-events-none absolute inset-0 bg-white/60" title="Applying the change…">
+                    <p className="sr-only">Applying the change…</p>
                   </div>
                 )}
               </div>

@@ -1,9 +1,10 @@
 import * as THREE from "three";
 import type { Guide } from "@/lib/types";
 
-// Muted gold for shown guides; the hovered parameter's guides brighten
-// into the hover-highlight family (same amber hue as the hover emissive) so
-// they stand out against the remaining guides and the model itself.
+// Muted gold for visible guides; the active parameter's guides brighten
+// into the highlight family (same amber hue as the hover emissive) so
+// they stand out against the model itself — since only one parameter's
+// guides are shown at a time, no two shades coexist on screen.
 const BASE_COLOR = 0xb89a3c;
 const HOVER_COLOR = 0xffe066;
 
@@ -33,9 +34,9 @@ export interface GuidesOverlay {
 	group: THREE.Group;
 	/** Replace the rendered guide set (disposes the previous meshes). */
 	setGuides(guides: Guide[]): void;
-	/** Re-apply visibility and color per parameter hover state — cheap,
-	 *  safe to call on every hover tick with no rebuild. */
-	refresh(opts: { hoveredParam: string | null; visible: (param: string) => boolean }): void;
+	/** Re-apply visibility and color per the current selection — cheap,
+	 *  safe to call on every selection change with no rebuild. */
+	refresh(opts: { visible: (param: string) => boolean }): void;
 	/** Re-scale all guide meshes for the current camera, keeping every
 	 *  guide a constant number of screen pixels regardless of zoom. Call
 	 *  once per frame from the render loop. */
@@ -47,7 +48,7 @@ export interface GuidesOverlay {
  *  a cylindrical shaft with arrowhead cones and terminal butt disks
  *  defining its ends, plus a dot on an angle's vertex — scaled to the
  *  guide set's overall size. Every guide's meshes share the group for its
- *  so hover-based visibility/brightness is a material swap, no rebuild.
+ *  so selection-based visibility/brightness is a material swap, no rebuild.
  *  Meshes render through the model (depthTest off, late render order) so
  *  guides stay readable inside solid shells. */
 export function createGuidesOverlay(): GuidesOverlay {
@@ -206,10 +207,10 @@ export function createGuidesOverlay(): GuidesOverlay {
 		}
 	};
 
-	const refresh = ({ hoveredParam, visible }: { hoveredParam: string | null; visible: (param: string) => boolean }) => {
+	const refresh = ({ visible }: { visible: (param: string) => boolean }) => {
 		for (const entry of entries) {
 			const on = visible(entry.param);
-			const material = hoveredParam !== null && entry.param === hoveredParam ? hoverMat : baseMat;
+			const material = on ? hoverMat : baseMat;
 			entry.items.forEach(({ mesh }) => {
 				mesh.visible = on;
 				mesh.material = material;

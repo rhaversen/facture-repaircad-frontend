@@ -167,6 +167,9 @@ export function useForge() {
     Record<string, number>
   >({});
   const [statusMessage, setStatusMessage] = useState("");
+  // The latest failed rebuild's report (why the change didn't show), or
+  // null when the last apply succeeded or no apply has run yet.
+  const [buildReport, setBuildReport] = useState<string | null>(null);
   const [designId, setDesignId] = useState<string | null>(null);
   // The handoff document that produced the picked design — refinement
   // receives this exact handoff, not a generic one.
@@ -177,7 +180,9 @@ export function useForge() {
     { designId: string; mesh: GlbModel | null; status: "generating" | "preview" | "ready"; error: string | null }[]
   >([]);
   const [busy, setBusy] = useState(false);
-
+  // Parameter name currently being applied (PATCH + rebuild + model swap in
+  // flight), or null when idle — the CAD view greys the model for this window.
+  const [settingParam, setSettingParam] = useState<string | null>(null);
   // Mirror of confirmedValues for async code that must not re-run on every
   // confirmation (finishCalibration batches the final patch).
   const confirmedValuesRef = useRef<Record<string, number>>({});
@@ -661,6 +666,9 @@ export function useForge() {
         return;
       }
       setConfirmedValuesTracked((prev) => ({ ...prev, [name]: value }));
+      // From here until the rebuilt model (or the failure message) lands,
+      // the CAD view greys the model out.
+      setSettingParam(name);
 
       void (async () => {
         try {
@@ -698,20 +706,27 @@ export function useForge() {
           // A non-stale "unchanged" means the PATCH didn't move the revision
           // (e.g. the value already equals the stored one) — the current
           // model is already correct, keep it.
+          setSettingParam(null);
           if (result.build === null) {
             setStatusMessage("Change not applied — the design could not be rebuilt");
+            setBuildReport(null);
           } else if (result.build.ok && result.geometry === null) {
             setStatusMessage("Rebuild produced no geometry");
-          } else if (!result.build.ok && result.build.errors > 0) {
+            setBuildReport(null);
+          } else if (!result.build.ok && (result.build.errors > 0 || result.build.report)) {
             setStatusMessage(
               result.build.errors === 1
                 ? "Rebuild failed with 1 error"
                 : `Rebuild failed with ${result.build.errors} errors`,
             );
+            setBuildReport(result.build.report || null);
           } else {
             setStatusMessage("");
+            setBuildReport(null);
           }
         } catch (err) {
+          setSettingParam(null);
+          setBuildReport(null);
           if (err instanceof ParameterErrors) {
             setStatusMessage(err.message);
             return;
@@ -1144,11 +1159,13 @@ export function useForge() {
     error,
     parameters,
     statusMessage,
+    buildReport,
     designId,
     selectedHandoff,
     iterations,
     variants,
     busy,
+    settingParam,
     confirmedValues,
     generate,
     rehydrate,

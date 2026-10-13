@@ -68,7 +68,7 @@ function ClarificationForm({
   }
 
   return (
-    <>
+    <form onSubmit={handleSubmit}>
       <div className="mb-6 grid items-start gap-4 max-[720px]:grid-cols-1 min-[721px]:grid-cols-2">
         {question && (
           <div className="wrap-break-word self-stretch rounded-lg bg-surface p-4 text-ink-soft">{question}</div>
@@ -98,18 +98,30 @@ function ClarificationForm({
           mark important parts of each photo.
         </p>
 
-        <label className="mt-2 mb-7 inline-flex cursor-pointer items-center justify-center rounded-[10px] border border-brand bg-white px-4.5 py-3 font-semibold text-brand hover:bg-[#f6f8ff]">
-          Choose photos
-          <input
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            onChange={(event) =>
-              addPhotos(Array.from(event.target.files ?? []))
-            }
-          />
-        </label>
+        {/* px-4.5 + the transparent border lift the submit button to exactly
+            the same box size as the "Choose photos" label (py-3 px-4.5 + 1px border) */}
+        <div className="mt-2 flex flex-wrap items-center justify-end gap-3">
+          <label className="inline-flex cursor-pointer items-center justify-center rounded-[10px] border border-brand bg-white px-4.5 py-3 font-semibold text-brand hover:bg-[#f6f8ff]">
+            Choose photos
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(event) =>
+                addPhotos(Array.from(event.target.files ?? []))
+              }
+            />
+          </label>
+
+          <button
+            type="submit"
+            className="border border-transparent px-4.5"
+            disabled={submitting || (!response.trim() && photos.length === 0)}
+          >
+            {submitting ? "Sending…" : "Continue"}
+          </button>
+        </div>
       </div>
 
       {photos.length > 0 && (
@@ -126,18 +138,7 @@ function ClarificationForm({
           {error}
         </p>
       )}
-
-      <form onSubmit={handleSubmit}>
-        <div className="mt-8 flex justify-end">
-          <button
-            type="submit"
-            disabled={submitting || (!response.trim() && photos.length === 0)}
-          >
-            {submitting ? "Sending…" : "Continue"}
-          </button>
-        </div>
-      </form>
-    </>
+    </form>
   );
 }
 

@@ -127,6 +127,12 @@ function ForgeStudio({
     // the whole scene fits regardless of light distance.
     cam.far = sphere.radius * 4 + light.position.length();
     cam.updateProjectionMatrix();
+    const center = box.getCenter(new THREE.Vector3());
+    // Imperative three.js mutation during a layout effect is intentional.
+     
+    light.target.position.copy(center);
+    light.target.updateMatrixWorld();
+     
     light.shadow.needsUpdate = true;
   }, [fitKey, fitModel]);
 
@@ -231,9 +237,11 @@ export function meshDisplayBounds(scene: THREE.Object3D) {
 }
 
 /*
-  One-shot camera framing per design: when the model first appears, aim
+  Camera framing per model instance: when a model first appears, aim
   OrbitControls at the model's displayed centre and pull the camera back to a
-  comfortable three-quarter view slightly above it. Runs once per fitKey.
+  comfortable three-quarter view slightly above it. Every *new* model — e.g.
+  the geometry after a parameter rebuild — re-runs the fit, so a rebuild that
+  shifted the bounds still lands mid-viewport.
 */
 function CameraFit({
   fitKey,
@@ -242,24 +250,33 @@ function CameraFit({
   fitKey: string | null;
   model: GlbModel | null;
 }) {
-  const camera = useThree((state) => state.camera);
+  const camera = useThree((state) => state.camera) as THREE.PerspectiveCamera;
   const controls = useThree((state) => state.controls) as
     | (THREE.EventDispatcher & { target: THREE.Vector3; update: () => void })
     | null;
-  const fittedKeyRef = useRef<string | null>(null);
+  const fittedRef = useRef<GlbModel | null>(null);
 
   // Imperative three.js camera/controls mutation is intentional here.
   /* eslint-disable react-hooks/immutability */
   useEffect(() => {
-    if (!model || fitKey === null || fittedKeyRef.current === fitKey) return;
-    if (!controls) return;
+    if (!model || fitKey === null || !controls) return;
+    if (fittedRef.current === model) return;
     const bounds = meshDisplayBounds(model.scene);
     if (bounds === null) return;
-    fittedKeyRef.current = fitKey;
+    fittedRef.current = model;
 
-    const dist = (bounds.radius / Math.sin((((camera as THREE.PerspectiveCamera).fov / 2) * Math.PI) / 180)) * 1.6;
+    // Fit against the narrower side of the frame: on a non-square pane the
+    // horizontal fov is smaller than the vertical one, and the bounds radius
+    // must clear that tighter angle or the model's edges leave the viewport.
+    const vHalf = ((camera.fov / 2) * Math.PI) / 180;
+    const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+    const dist = (bounds.radius / Math.sin(Math.min(vHalf, hHalf))) * 1.6;
 
-    const target = new THREE.Vector3(0, 0, 0);
+    // OrbitControls look at the world origin by default, but a model whose
+    // geometry is authored off-origin would sit above/below the viewport.
+    // Aim at the model's own bounds centre so it always lands mid-viewport;
+    // clone so controls don't alias the bounds object's vector.
+    const target = bounds.center.clone();
     const dir = new THREE.Vector3(1, 0.55, 1.3).normalize();
 
     camera.position.copy(target).addScaledVector(dir, dist);
@@ -277,22 +294,20 @@ function CameraFit({
 
 /** Parametric guides rendered over the model: the backend sources the guide
  *  geometry from the same dimensions the parameters control, so the lines
- *  always agree with the current revision. Visibility is baseline
- *  show-all plus a hovered parameter override — hiding/revealing is a
- *  per-line `.visible` + material swap on the already-built overlay, so
- *  hover needs no rebuild. */
+ *  always agree with the current revision. Visibility is single
+ *  selection — exactly one parameter's guides (or none) — a per-line
+ *  `.visible` + material state on the already-built overlay, so a
+ *  selection change needs no rebuild. */
 function Guides({
   guides,
   designId,
   model,
   visible,
-  hoveredParam,
 }: {
   guides: Guide[];
   designId: string | null;
   model: GlbModel | null;
   visible: (name: string) => boolean;
-  hoveredParam: string | null;
 }) {
   const scene = useThree((state) => state.scene);
   const camera = useThree((state) => state.camera) as THREE.PerspectiveCamera;
@@ -300,8 +315,6 @@ function Guides({
   const overlayRef = useRef<GuidesOverlay | null>(null);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
-  const hoveredRef = useRef(hoveredParam);
-  hoveredRef.current = hoveredParam;
 
   useEffect(() => {
     if (scene === null) return;
@@ -319,18 +332,13 @@ function Guides({
     overlayRef.current?.setGuides(guides);
   }, [guides, designId, model]);
 
-  // Hover and per-param toggles never rebuild the overlay; they only flip
-  // visibility and swap to the brighter hover material.
+  // Selection changes never rebuild the overlay; they only flip line
+  // visibility and swap to the selected (brighter) material.
   useEffect(() => {
     const overlay = overlayRef.current;
     if (overlay === null) return;
-    const visibleBase = visibleRef.current;
-    const hovered = hoveredRef.current;
-    overlay.refresh({
-      hoveredParam: hovered,
-      visible: (param) => visibleBase(param) || hovered === param,
-    });
-  }, [guides, hoveredParam, visible, model]);
+    overlay.refresh({ visible: visibleRef.current });
+  }, [guides, visible, model]);
 
   // Guides are sized in screen pixels — rescale every frame against the
   // live camera so they stay a constant pixel size at any zoom.
@@ -349,7 +357,6 @@ export function CadCanvas({
   designId,
   guides,
   guideVisible,
-  hoveredGuideParam,
 }: {
   children: React.ReactNode;
   generating: boolean;
@@ -358,7 +365,6 @@ export function CadCanvas({
   designId?: string | null;
   guides?: Guide[];
   guideVisible?: (name: string) => boolean;
-  hoveredGuideParam?: string | null;
 }) {
   const model = fitModel;
   return (
@@ -378,7 +384,6 @@ export function CadCanvas({
             designId={designId ?? model?.scene.name ?? null}
             model={model}
             visible={guideVisible ?? (() => true)}
-            hoveredParam={hoveredGuideParam ?? null}
           />
         ) : null}
         <OrbitControls makeDefault enableDamping dampingFactor={0.1} minDistance={0.001} maxDistance={Infinity} />

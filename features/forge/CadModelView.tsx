@@ -13,6 +13,13 @@ import { useDesignExists } from "@/hooks/useDesignExists";
 import { downloadBlob, exportScene } from "@/lib/exportModel";
 import type { Guide } from "@/lib/types";
 import {
+  CAD_SCREEN,
+  cadStepFor,
+  stepNav,
+  timelineStepStates,
+  type TimelineNavState,
+} from "@/lib/runProgress";
+import {
   CadCanvas,
   DesignPicker,
   Model,
@@ -38,10 +45,10 @@ interface CadModelViewProps {
 /*
   Screen 6 — the Forge workspace. Renders the provisional CAD model produced
   from the RepairCAD handoff document, the variant picker while candidates
-  stream in, the calibration wizard with per-parameter guides and
-  measurements, the refinement chat (a second Flow run), and the final repair
-  instructions. The same <Canvas> instance hosts every phase, so the camera
-  keeps its orientation throughout.
+  stream in (re-openable at any time from timeline step 5), the calibration
+  wizard with per-parameter guides and measurements, the refinement chat (a
+  second Flow run), and the final repair instructions. The same <Canvas>
+  instance hosts every phase, so the camera keeps its orientation throughout.
 */
 export default function CadModelView({
   handoffs,
@@ -61,18 +68,18 @@ export default function CadModelView({
     buildReport,
     variants,
     designId,
-    selectedHandoff,
     busy,
     settingParam,
     confirmedValues,
     generate,
     rehydrate,
+    reloadCurrentDesignGeometry,
+    reopenDesignPicker,
     refineDesign,
     chooseDesign,
     confirmParamValue,
     finishCalibration,
     reset,
-    iterations,
   } = forge;
 
   /*
@@ -106,7 +113,7 @@ export default function CadModelView({
   } = useRefinementRun();
 
   useEffect(() => {
-    const bootstrapHandoff = selectedHandoff ?? handoffs[0] ?? "";
+    const bootstrapHandoff = handoffs[0] ?? "";
     if (!bootstrapHandoff.trim()) return;
     if (designId === null) return;
     initializeRefinement({
@@ -115,7 +122,7 @@ export default function CadModelView({
     }).catch((err) => {
       console.error("Could not start refinement conversation:", err);
     });
-  }, [selectedHandoff, handoffs, designId, initializeRefinement]);
+  }, [handoffs, designId, initializeRefinement]);
 
   // Keep the refinement run synchronized so forge_instruction / final_guidance
   // produced by R3 becomes visible to this component.
@@ -148,8 +155,6 @@ export default function CadModelView({
     });
   }, [phase, busy, refinementRunningDoc, runId, refineDesign]);
 
-  // Calibration input is awaiting the user exactly during the calibrating phase.
-  const awaitingInput = phase === "calibrating";
   const isLoading = phase === "initializing" || phase === "finalizing";
   // From the moment a param change is applied until the rebuilt model is
   // shown, the model is greyed out (dimmed) instead of spinning.
@@ -208,17 +213,11 @@ export default function CadModelView({
   const finalGuidance = refinementRunningDoc?.final_guidance?.trim() ?? "";
 
   /*
-    The CAD workspace owns three timeline steps, one per sub-phase:
-    5 while the rough-design picker is open (or a model is still being
-    generated), 6 while the design is being refined/calibrated, 7 once
-    the repair guidance has landed.
+    The CAD workspace owns three timeline sub-steps: 5 while the
+    rough-design picker is open (or a model is still being generated),
+    6 while refining/calibrating, 7 once the repair guidance has landed.
   */
-  const currentCADStep =
-    phase === "calibrating" || phase === "ready" || phase === "finalizing"
-      ? finalGuidance
-        ? 7
-        : 6
-      : 5;
+  const currentCADStep = cadStepFor(phase, finalGuidance !== "");
 
   function handleDownloadFinalGuidance() {
     if (!finalGuidance) return;
@@ -270,6 +269,50 @@ export default function CadModelView({
 
   const showFinalGuidanceSection = phase === "ready";
 
+  /*
+    The CAD column of the timeline is decided by the shared stepNav:
+    1–3 (and 4) mean "back to the conversation", 5/6/7 open the CAD
+    sub-states. The CAD workspace itself has always run past its intake
+    and handoff, so those flags are true here.
+  */
+  const cadNav: TimelineNavState = {
+    screen: CAD_SCREEN,
+    conversationReady: true,
+    handoffReady: true,
+    clarificationActive: false,
+    cadStep: currentCADStep,
+    cadSelectionMade: designId !== null,
+    hasFinalGuidance: finalGuidance !== "",
+  };
+  const { states: stepStates, reasons: stepReasons } =
+    timelineStepStates(cadNav, CAD_SCREEN);
+
+  function handleTimelineStep(step: number) {
+    const action = stepNav(cadNav, step);
+    if (action.kind !== "navigate") return;
+    if (step < 5) {
+      onBackToChat?.();
+      return;
+    }
+    if (step === 5) {
+      /* Reopen the variant picker with the run's recorded
+         candidates — works from any CAD phase. */
+      reopenDesignPicker({ runId });
+      return;
+    }
+    if (step === 6) {
+      /* Restore the current design's calibration view when the
+         model state was dropped (e.g. jumped in from the picker). */
+      if (model === null && designId !== null) {
+        reloadCurrentDesignGeometry();
+      }
+      return;
+    }
+    /* step 7: the guidance section lives on this page — reveal it. */
+    const el = document.getElementById("repair-guidance-section");
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   return (
     <AppShell fill>
       <Card fill className="!max-w-[1500px]">
@@ -284,15 +327,9 @@ export default function CadModelView({
           </button>
           <RepairProgress
             currentStep={currentCADStep}
-            onStepClick={
-              onBackToChat
-                ? (step) => {
-                    /* Steps 1-4 live on the chat screen; 5-7 are this
-                       workspace itself, so clicking them is a no-op. */
-                    if (step < 5) onBackToChat();
-                  }
-                : undefined
-            }
+            onStepClick={handleTimelineStep}
+            clickStates={stepStates}
+            reasons={stepReasons}
           />
         </div>
 
@@ -354,7 +391,6 @@ export default function CadModelView({
                 <DesignPicker
                   key={pickerKey}
                   variants={variants}
-                  iterations={iterations}
                   selectedId={pickerSelectedId}
                   onSelected={setPickerSelectedId}
                 />
@@ -520,7 +556,10 @@ export default function CadModelView({
         )}
 
         {showFinalGuidanceSection && (
-          <section className="mt-6 shrink-0 rounded-xl border border-line bg-surface p-6">
+          <section
+            id="repair-guidance-section"
+            className="mt-6 shrink-0 rounded-xl border border-line bg-surface p-6"
+          >
             <div className="mb-5 flex items-start justify-between gap-5 max-[800px]:flex-col">
               <div>
                 <h2 className="mb-1.5 text-xl">Repair instructions</h2>

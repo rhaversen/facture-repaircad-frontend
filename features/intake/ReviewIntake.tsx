@@ -1,7 +1,8 @@
 "use client";
 
 import RepairProgress from "@/components/RepairProgress";
-import { AppHeader, AppShell, Card } from "@/components/AppShell";
+import type { StepClickStates, StepReasons } from "@/lib/runProgress";
+import { AppShell, Card } from "@/components/AppShell";
 import { useEffect, useState } from "react";
 import { createAnnotatedCopy } from "@/lib/annotatedImageUtils";
 import type {
@@ -15,11 +16,14 @@ interface ReviewIntakeProps {
   photos: Photo[];
   annotations: Annotation[];
   onBack: () => void;
+  onNewRun: () => void;
   onSubmit: (annotatedCopies: Record<string, AnnotatedCopy>) => void;
   submitting: boolean;
   submissionError: string;
   /** navigate to an earlier timeline step (1-3 blocks forward-only intake). */
   onStepClick?: (step: number) => void;
+  clickStates?: StepClickStates;
+  reasons?: StepReasons;
 }
 
 /*
@@ -31,10 +35,13 @@ export default function ReviewIntake({
   photos,
   annotations,
   onBack,
+  onNewRun,
   onSubmit,
   submitting,
   submissionError,
   onStepClick,
+  clickStates,
+  reasons,
 }: ReviewIntakeProps) {
   const [annotatedCopies, setAnnotatedCopies] = useState<
     Record<string, AnnotatedCopy>
@@ -79,9 +86,22 @@ export default function ReviewIntake({
   return (
     <AppShell>
       <Card>
-        <AppHeader />
-
-        <RepairProgress currentStep={3} onStepClick={onStepClick} />
+        <div className="relative mb-6 shrink-0">
+          <button
+            type="button"
+            title="Start a new run"
+            className="btn-utility absolute -top-2 right-0"
+            onClick={onNewRun}
+          >
+            ＋ New run
+          </button>
+          <RepairProgress
+            currentStep={3}
+            onStepClick={onStepClick}
+            clickStates={clickStates}
+            reasons={reasons}
+          />
+        </div>
 
         <h1>Review your repair</h1>
 

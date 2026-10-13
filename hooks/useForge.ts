@@ -18,26 +18,27 @@ import {
 import { parseGlbCached } from "@/lib/glb";
 import { recoverDesignIdForRun } from "@/lib/recoverDesign";
 import type {
-  ForgeIteration,
   ForgePhase,
-  GeometrySummary,
   GlbModel,
   Guide,
   Parameter,
 } from "@/lib/types";
 
 /*
-  Run → design persistence. A finished (or in-progress) calibration can be
-  rehydrated from the persisted Forge design — GET /designs/:id/mesh re-renders
-  the stored model, and confirmed parameter values are PATCHed to Forge the
-  moment each one is confirmed (not batched at finish) — so a page refresh or
-  run re-entry never pays for a new LLM generation and never loses a
-  confirmed measurement. A "choosing" entry instead stores the parallel
-  initial variant ids, so a refresh while the picker is open re-renders them
-  (no LLM call) and reopens the picker. Entries survive navigation and
-  refresh in the same browser; anything that fails to rehydrate (deleted
-  design, other user's token) is dropped and the flow falls back to full
-  generation.
+  Run → design persistence. Each run entry is just the current selection:
+  the design the user settled on, which phase of the CAD workspace it is in,
+  and the variant ids that were generated for the run — the candidates also
+  stay recorded after a pick so the picker can be reopened any time with the
+  original set. A finished (or in-progress) calibration can be rehydrated
+  from the persisted Forge design — GET /designs/:id/mesh re-renders the
+  stored model, and confirmed parameter values are PATCHed to Forge the
+  moment each one is confirmed (not batched at finish) — so a page refresh
+  or run re-entry never pays for a new LLM generation and never loses a
+  confirmed measurement. A "choosing" entry stores the variant ids, so a
+  refresh while the picker is open re-renders them (no LLM call) and
+  reopens the picker. Entries survive navigation and refresh in the same
+  browser; anything that fails to rehydrate (deleted design, other user's
+  token) is dropped and the flow falls back to full generation.
 */
 const DESIGN_STORE_KEY = "repaircad.forgeDesigns";
 
@@ -45,10 +46,6 @@ interface StoredDesignState {
   designId?: string;
   phase: string;
   variantDesignIds?: string[];
-  /** Handoff document that produced the picked design. */
-  selectedHandoff?: string;
-  /** Feedback iteration lineage, oldest first. */
-  iterations?: ForgeIteration[];
 }
 
 function readDesignStore(): Record<string, StoredDesignState> {
@@ -76,11 +73,20 @@ export function loadStoredDesignState(runId: string | null): StoredDesignState |
   if (entry === undefined || typeof entry.phase !== "string") {
     return null;
   }
+  if (typeof entry.designId !== "undefined" && typeof entry.designId !== "string") {
+    return null;
+  }
+  if (
+    entry.variantDesignIds !== undefined &&
+    (!Array.isArray(entry.variantDesignIds) ||
+      !entry.variantDesignIds.every((id) => typeof id === "string"))
+  ) {
+    return null;
+  }
   if (entry.phase === "choosing") {
     if (
       !Array.isArray(entry.variantDesignIds) ||
-      entry.variantDesignIds.length === 0 ||
-      !entry.variantDesignIds.every((id) => typeof id === "string")
+      entry.variantDesignIds.length === 0
     ) {
       return null;
     }
@@ -89,47 +95,17 @@ export function loadStoredDesignState(runId: string | null): StoredDesignState |
   if (typeof entry.designId !== "string") {
     return null;
   }
-  if (
-    entry.selectedHandoff !== undefined &&
-    typeof entry.selectedHandoff !== "string"
-  ) {
-    return null;
-  }
-  // A "choosing" entry keeps the ids of the candidates still streaming so a
-  // refresh can reopen the picker mid-pick.
-  if (
-    entry.variantDesignIds !== undefined &&
-    (!Array.isArray(entry.variantDesignIds) ||
-      !entry.variantDesignIds.every((id) => typeof id === "string"))
-  ) {
-    return null;
-  }
-  if (entry.iterations !== undefined && !Array.isArray(entry.iterations)) {
-    return null;
-  }
   return entry;
 }
 
 function storeDesignState(runId: string | null, entry: StoredDesignState) {
   if (!runId) return;
   const store = readDesignStore();
-  // Once a run has variant ids only a "choosing" entry rewrites them; a
-  // picked design lands on the design page and the picker never reopens.
-  // Same for the selected handoff: later phase writes must not drop it.
-  if (
-    entry.phase === "choosing" &&
-    entry.variantDesignIds === undefined &&
-    store[runId]?.variantDesignIds
-  ) {
+  // Variant ids are written once the candidates are known and kept forever
+  // after a pick — they are what lets the picker be reopened with the run's
+  // original candidates, so later phase writes must not drop them.
+  if (entry.variantDesignIds === undefined && store[runId]?.variantDesignIds) {
     entry = { ...entry, variantDesignIds: store[runId].variantDesignIds };
-  }
-  if (entry.selectedHandoff === undefined && store[runId]?.selectedHandoff) {
-    entry = { ...entry, selectedHandoff: store[runId].selectedHandoff };
-  }
-  // Iteration lineage accumulates: later phase writes keep what earlier
-  // rounds recorded. Callers adding a round pass the full updated list.
-  if (entry.iterations === undefined && store[runId]?.iterations) {
-    entry = { ...entry, iterations: store[runId].iterations };
   }
   store[runId] = entry;
   writeDesignStore(store);
@@ -145,17 +121,14 @@ export function clearStoredDesignState(runId: string | null) {
 /*
   Shared Forge state machine used by the CAD screen:
 
-    idle → initializing → choosing → (pick) → calibrating → finalizing → ready
+    idle → initializing → choosing → calibrating → finalizing → ready
 
-  generate() fires one independent design per supplied handoff document in
-  parallel and parks in "choosing" until the user picks one. The picked
-  design continues into a calibration wizard that renders a sweep of preview
-  frames per parameter. On the design page, refineDesign() runs a linear
-  refinement round: it duplicates the current design once, sends the user's
-  feedback only to the copy, and the copy becomes the new current design —
-  recorded as the next entry in the iteration lineage. All operations share
-  a single busy lock, an AbortController tree, and localStorage persistence
-  keyed by run id.
+  generate() fires one design per handoff document in parallel and parks in
+  "choosing" until the user picks a candidate; the pick continues into the
+  calibration wizard. refineDesign() refines the current design (duplicate +
+  feedback to the copy). reopenDesignPicker() and rehydrate() restore the
+  picker / design from the per-run localStorage entries. All operations
+  share a single busy lock, an AbortController tree, and the store.
 */
 export function useForge() {
   const [phase, setPhase] = useState<ForgePhase>("idle");
@@ -171,13 +144,8 @@ export function useForge() {
   // null when the last apply succeeded or no apply has run yet.
   const [buildReport, setBuildReport] = useState<string | null>(null);
   const [designId, setDesignId] = useState<string | null>(null);
-  // The handoff document that produced the picked design — refinement
-  // receives this exact handoff, not a generic one.
-  const [selectedHandoff, setSelectedHandoff] = useState<string | null>(null);
-  // Feedback lineage, oldest first — drives the iteration timeline.
-  const [iterations, setIterations] = useState<ForgeIteration[]>([]);
   const [variants, setVariants] = useState<
-    { designId: string; mesh: GlbModel | null; status: "generating" | "preview" | "ready"; error: string | null }[]
+    { designId: string; mesh: GlbModel | null; status: "generating" | "ready"; error: string | null }[]
   >([]);
   const [busy, setBusy] = useState(false);
   // Parameter name currently being applied (PATCH + rebuild + model swap in
@@ -186,23 +154,6 @@ export function useForge() {
   // Mirror of confirmedValues for async code that must not re-run on every
   // confirmation (finishCalibration batches the final patch).
   const confirmedValuesRef = useRef<Record<string, number>>({});
-  // Mirror of iterations so feedback rounds can append lineage without
-  // depending on state (avoids stale closures).
-  const iterationsRef = useRef<ForgeIteration[]>([]);
-  const setIterationsTracked = useCallback(
-    (
-      updater:
-        | ForgeIteration[]
-        | ((prev: ForgeIteration[]) => ForgeIteration[]),
-    ) => {
-      setIterations((prev) => {
-        const next = typeof updater === "function" ? updater(prev) : updater;
-        iterationsRef.current = next;
-        return next;
-      });
-    },
-    [],
-  );
   const setConfirmedValuesTracked = useCallback(
     (
       updater:
@@ -220,7 +171,7 @@ export function useForge() {
   );
 
   const patchVariant = useCallback(
-    (variantId: string, patch: Partial<{ mesh: GlbModel | null; status: "generating" | "preview" | "ready"; error: string | null }>) => {
+    (variantId: string, patch: Partial<{ mesh: GlbModel | null; status: "generating" | "ready"; error: string | null }>) => {
       setVariants((prev) =>
         prev.map((v) => (v.designId === variantId ? { ...v, ...patch } : v)),
       );
@@ -364,7 +315,6 @@ export function useForge() {
       signal: AbortSignal;
       runId: string | null;
     }) => {
-      const pending = calibratable.filter((p) => !p.set);
       setParameters(calibratable);
       setConfirmedValuesTracked(
         Object.fromEntries(
@@ -425,7 +375,6 @@ export function useForge() {
       setParameters([]);
       setVariants([]);
       setDesignId(null);
-      setSelectedHandoff(null);
 
       try {
         /*
@@ -479,9 +428,6 @@ export function useForge() {
 
         // Latest model per variant id, so a mid-stream pick can reuse the tile.
         const variantMeshes = new Map<string, GlbModel>();
-        // Which handoff produced which variant, so the picked design keeps
-        // its own handoff for refinement instead of a generic one.
-        const variantHandoffs = new Map<string, string>();
 
         const generateVariant = async (handoffMarkdown: string) => {
           const child = new AbortController();
@@ -492,7 +438,6 @@ export function useForge() {
           try {
             variantId = await createDesign();
             noteVariant(variantId);
-            variantHandoffs.set(variantId, handoffMarkdown);
             activeVariantIdsRef.current.add(variantId);
             setVariants((prev) => [
               ...prev,
@@ -572,9 +517,6 @@ export function useForge() {
         // Phase 2: chosen design continues into calibration.
         setVariants([]);
         setDesignId(chosenId);
-        setSelectedHandoff(
-          chosenId !== null ? (variantHandoffs.get(chosenId) ?? null) : null,
-        );
         // Reuse the tile's parsed model if it arrived; otherwise the
         // geometry load in the calibration phase provides the first render.
         const reused = variantMeshes.get(chosenId ?? "");
@@ -582,26 +524,12 @@ export function useForge() {
           setModel(reused);
         }
         if (runId && chosenId) {
-          // The picked design continues to the design page — once picked the
-          // picker never reopens (refine rounds are linear), so the picked
-          // entry stores no variant list. The ids of the initial candidates
-          // stay in the round-1 iteration lineage for the timeline only.
-          const initialRunId = runId;
-          const iterations = [
-            {
-              round: 1,
-              feedback: handoffs[0],
-              sourceDesignId: startedVariantIds[0] ?? chosenId,
-              variantIds: [...startedVariantIds],
-              pickedDesignId: chosenId,
-            },
-          ];
-          setIterationsTracked(iterations);
-          storeDesignState(initialRunId, {
+          // The picked design keeps the run's candidate list: it is what
+          // lets the picker be reopened later with the original tiles.
+          storeDesignState(runId, {
             designId: chosenId,
             phase: "calibrating",
-            selectedHandoff: variantHandoffs.get(chosenId),
-            iterations,
+            variantDesignIds: [...startedVariantIds],
           });
         }
         if (chosenId === null) return;
@@ -644,7 +572,7 @@ export function useForge() {
         releaseBusy(lock);
       }
     },
-    [runCalibration, patchVariant, removeVariant, stopActiveVariants, acquireBusy, releaseBusy, setIterationsTracked],
+    [runCalibration, patchVariant, removeVariant, stopActiveVariants, acquireBusy, releaseBusy],
   );
 
   /*
@@ -660,12 +588,9 @@ export function useForge() {
   const confirmParamValue = useCallback(
     (name: string, value: number) => {
       const currentDesignId = designId;
-      if (currentDesignId === null) {
-        // Design page variant: nothing to persist or re-render against.
-        setConfirmedValuesTracked((prev) => ({ ...prev, [name]: value }));
-        return;
-      }
       setConfirmedValuesTracked((prev) => ({ ...prev, [name]: value }));
+      // No design locked in yet: nothing to persist or re-render against.
+      if (currentDesignId === null) return;
       // From here until the rebuilt model (or the failure message) lands,
       // the CAD view greys the model out.
       setSettingParam(name);
@@ -852,6 +777,168 @@ export function useForge() {
   );
 
   /*
+    Restore the current design's geometry when the view state lost it
+    (e.g. re-entering the CAD workspace from the timeline). Resets the
+    calibration view to a clean spinner and re-fetches the model.
+  */
+  const reloadCurrentDesignGeometry = useCallback(async (): Promise<void> => {
+    if (designId === null) return;
+    setError("");
+    setStatusMessage("Restoring your model…");
+    setModel(null);
+    setGuides([]);
+    revisionRef.current = null;
+    try {
+      await loadGeometry(designId);
+    } catch (err) {
+      console.warn("[Forge] model restore failed:", err);
+      setStatusMessage("");
+      return;
+    }
+    setStatusMessage("");
+  }, [designId, loadGeometry]);
+
+  /*
+    Reopen the variant picker from the design page. Refetches/reattaches
+    the candidates recorded for the run and parks on the user's choice.
+    After the pick, the flow continues exactly like generate()'s phase 2:
+    into calibration, or straight to ready if the design has no
+    calibratable parameters.
+  */
+  const reopenDesignPicker = useCallback(
+    async ({ runId }: { runId: string | null }): Promise<string | null> => {
+      const entry = runId ? loadStoredDesignState(runId) : null;
+      if (entry === null) {
+        console.warn("[Forge] reopenDesignPicker skipped — no stored state");
+        return designId;
+      }
+      const candidateIds = entry.variantDesignIds;
+      if (!Array.isArray(candidateIds) || candidateIds.length === 0) {
+        console.warn(
+          "[Forge] reopenDesignPicker skipped — no stored candidates",
+        );
+        return designId;
+      }
+
+      const lock = {};
+      if (!acquireBusy(lock)) {
+        console.warn(
+          "[Forge] reopenDesignPicker skipped — another operation is in flight",
+        );
+        return designId;
+      }
+
+      const controller = new AbortController();
+      chooseResolverRef.current?.(designId);
+      chooseResolverRef.current = null;
+      abortRef.current?.abort();
+      abortRef.current = controller;
+      const { signal } = controller;
+
+      // Reset the view back to the picker: model, params, confirmations,
+      // plus the variant tiles. The selected designId is kept until a
+      // real pick lands, so null keeps the prior fallback.
+      stopActiveVariants();
+      setPhase("choosing");
+      setError("");
+      setStatusMessage("Restoring your candidate designs…");
+      setModel(null);
+      setGuides([]);
+      revisionRef.current = null;
+      setParameters([]);
+      setConfirmedValues({});
+      confirmedValuesRef.current = {};
+      setVariants([]);
+
+      try {
+        const survivingIds = await rehydrateVariants({
+          variantDesignIds: candidateIds,
+          signal,
+        });
+        if (signal.aborted) return designId;
+        if (survivingIds === null) {
+          // Every candidate is gone — fall back to the prior design.
+          setPhase("ready");
+          if (runId) {
+            storeDesignState(runId, {
+              designId: designId ?? undefined,
+              phase: "ready",
+              variantDesignIds: candidateIds,
+            });
+          }
+          return designId;
+        }
+
+        // Release the lock while parked on the user's pick.
+        releaseBusy(lock);
+
+        const pickedId = await new Promise<string | null>((resolve) => {
+          chooseResolverRef.current = resolve;
+        });
+        if (signal.aborted) return designId;
+        if (!acquireBusy(lock)) return designId;
+
+        setVariants([]);
+
+        // Pick landed — or the picker was closed without a pick, in which
+        // case the previous design is restored exactly as if it had been
+        // re-picked, so the design page simply comes back.
+        const resolvedId = pickedId ?? designId;
+        if (resolvedId === null) return designId;
+        setDesignId(resolvedId);
+        await loadGeometry(resolvedId);
+        if (signal.aborted) return designId;
+        if (runId) {
+          storeDesignState(runId, {
+            designId: resolvedId,
+            phase: "calibrating",
+            variantDesignIds: survivingIds,
+          });
+        }
+
+        const design = await getDesign(resolvedId);
+        if (signal.aborted) return designId;
+        const rawParams = design?.parameters ?? [];
+        const calibratable = rawParams.filter(isCalibratable);
+
+        if (calibratable.length === 0) {
+          setPhase("ready");
+          setStatusMessage("");
+          if (runId) {
+            storeDesignState(runId, {
+              designId: resolvedId,
+              phase: "ready",
+              variantDesignIds: survivingIds,
+            });
+          }
+          return resolvedId;
+        }
+
+        await runCalibration({
+          designId: resolvedId,
+          calibratable,
+          signal,
+          runId,
+        });
+        return resolvedId;
+      } catch (err) {
+        if (signal.aborted) return designId;
+        console.error("Forge picker re-open failed:", err);
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Could not reopen the design picker.",
+        );
+        setPhase("error");
+        return designId;
+      } finally {
+        releaseBusy(lock);
+      }
+    },
+    [designId, getDesign, runCalibration, stopActiveVariants, acquireBusy, releaseBusy, loadGeometry],
+  );
+
+  /*
     Restore a previously generated design for this run instead of paying for
     a full regeneration. Returns true when a design/variant set was restored.
   */
@@ -877,7 +964,6 @@ export function useForge() {
           stored = {
             designId: recoveredId,
             phase: "ready",
-            selectedHandoff: recoveryHandoff,
           };
           storeDesignState(runId, stored);
         }
@@ -900,17 +986,13 @@ export function useForge() {
       setPhase("initializing");
       setStatusMessage("Restoring your model…");
       setError("");
-      setIterationsTracked(
-        Array.isArray(stored.iterations) ? stored.iterations : [],
-      );
 
       try {
         let targetDesignId: string | undefined = stored.designId;
 
         /*
           Only a "choosing" entry reopens the picker — a refresh mid-pick. A
-          picked design lands directly on the design page; refinement is
-          linear, so going back to the picker is not part of the flow.
+          picked design lands directly on the design page.
         */
         const pickerIds =
           stored.phase === "choosing" ? stored.variantDesignIds : null;
@@ -941,9 +1023,6 @@ export function useForge() {
             designId: targetDesignId ?? undefined,
             phase: "calibrating",
             variantDesignIds: survivingIds,
-            // The pick cannot tell us which handoff produced the design here,
-            // so the recovery needle stays the first handoff.
-            selectedHandoff: stored.selectedHandoff ?? (recoveryHandoff || undefined),
           });
         }
 
@@ -959,7 +1038,17 @@ export function useForge() {
           return false;
         }
         setDesignId(targetDesignId);
-        setSelectedHandoff(stored.selectedHandoff ?? (recoveryHandoff || null));
+
+        // A picked design is driven by the flow below, which stores its own
+        // entries; normalize the entry in place so a legacy one written by
+        // an older build drops its pre-refactor keys on first restore.
+        if (pickerIds === null && runId) {
+          storeDesignState(runId, {
+            designId: targetDesignId,
+            phase: stored.phase,
+            variantDesignIds: stored.variantDesignIds,
+          });
+        }
 
         if (stored.phase === "calibrating") {
           const stream = subscribeDesignStream(targetDesignId, signal);
@@ -1006,7 +1095,7 @@ export function useForge() {
         releaseBusy(lock);
       }
     },
-    [runCalibration, rehydrateVariants, acquireBusy, releaseBusy, setIterationsTracked],
+    [runCalibration, rehydrateVariants, acquireBusy, releaseBusy],
   );
 
   /*
@@ -1074,23 +1163,8 @@ export function useForge() {
         setVariants([]);
         setDesignId(copyId);
         setStatusMessage("");
-
-        const roundIndex = iterationsRef.current.length + 1;
-        const roundIteration: ForgeIteration = {
-          round: roundIndex,
-          feedback: feedback.trim(),
-          sourceDesignId: source,
-          variantIds: [copyId],
-          pickedDesignId: copyId,
-        };
-        const nextIterations = [...iterationsRef.current, roundIteration];
-        setIterationsTracked(nextIterations);
         if (runId) {
-          storeDesignState(runId, {
-            designId: copyId,
-            phase: "calibrating",
-            iterations: nextIterations,
-          });
+          storeDesignState(runId, { designId: copyId, phase: "calibrating" });
         }
 
         setPhase("calibrating");
@@ -1127,7 +1201,7 @@ export function useForge() {
         releaseBusy(lock);
       }
     },
-    [designId, runCalibration, acquireBusy, releaseBusy, setIterationsTracked],
+    [designId, runCalibration, acquireBusy, releaseBusy],
   );
 
   const reset = useCallback(() => {
@@ -1139,7 +1213,6 @@ export function useForge() {
     setBusy(false);
     setVariants([]);
     setDesignId(null);
-    setSelectedHandoff(null);
     setPhase("idle");
     setModel(null);
     setGuides([]);
@@ -1149,8 +1222,7 @@ export function useForge() {
     setParameters([]);
     setConfirmedValues({});
     confirmedValuesRef.current = {};
-    setIterationsTracked([]);
-  }, [stopActiveVariants, setIterationsTracked]);
+  }, [stopActiveVariants]);
 
   return {
     phase,
@@ -1161,14 +1233,14 @@ export function useForge() {
     statusMessage,
     buildReport,
     designId,
-    selectedHandoff,
-    iterations,
     variants,
     busy,
     settingParam,
     confirmedValues,
     generate,
     rehydrate,
+    reloadCurrentDesignGeometry,
+    reopenDesignPicker,
     refineDesign,
     chooseDesign,
     confirmParamValue,

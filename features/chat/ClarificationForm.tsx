@@ -2,15 +2,13 @@
 
 import { useState } from "react";
 
-import { AppHeader, AppShell, Card } from "@/components/AppShell";
 import PhotoAnnotation from "@/features/intake/PhotoAnnotation";
 import { useIntake } from "@/hooks/useIntake";
 import { createAnnotatedCopy } from "@/lib/annotatedImageUtils";
 import type { Annotation, AnnotatedCopy, Photo } from "@/lib/types";
 
-interface CaseClarificationProps {
-  question?: string;
-  embedded?: boolean;
+interface ClarificationFormProps {
+  question: string;
   onSubmit: (clarification: {
     content: string;
     photos: Photo[];
@@ -22,31 +20,22 @@ interface CaseClarificationProps {
 }
 
 /*
-  Sidebar mini-intake shown when the pipeline's S2 node asks the case back for
-  clarification: a text response + optional annotated photos, submitted as one
-  turn on the active run.
-
-  Standalone (non-embedded) use keeps the page shell; when embedded in the
-  chat screen's sidebar the host already provides the card, border and scroll
-  container, so only the bare form content is rendered.
+  Mini-intake for the repair clarification state: a text response plus
+  optional annotated photos, submitted as one turn on the active run.
+  The host screen provides the heading, the card and the scroll container.
 */
-function ClarificationForm({
+export default function ClarificationForm({
   question,
   onSubmit,
   submitting,
   error,
-}: {
-  question: string;
-  onSubmit: CaseClarificationProps["onSubmit"];
-  submitting: boolean;
-  error: string;
-}) {
+}: ClarificationFormProps) {
   const [response, setResponse] = useState("");
 
   /*
     Same photo + annotation engine as the intake wizard with its default
-    auto-commit behavior: releasing a drag saves the box immediately, then the
-    annotation is named inline in the panel, exactly like the intake step.
+    auto-commit behavior: releasing a drag saves the box immediately, then
+    the annotation is named inline in the panel, exactly like the intake step.
   */
   const intake = useIntake();
   const { photos, addPhotos } = intake;
@@ -141,38 +130,3 @@ function ClarificationForm({
     </form>
   );
 }
-
-export default function CaseClarification({
-  question = "",
-  embedded = false,
-  onSubmit,
-  submitting,
-  error,
-}: CaseClarificationProps) {
-  if (embedded) {
-    return (
-      <ClarificationForm
-        question={question}
-        onSubmit={onSubmit}
-        submitting={submitting}
-        error={error}
-      />
-    );
-  }
-
-  return (
-    <AppShell>
-      <Card>
-        <AppHeader />
-        <h1>Repair clarification</h1>
-        <ClarificationForm
-          question={question}
-          onSubmit={onSubmit}
-          submitting={submitting}
-          error={error}
-        />
-      </Card>
-    </AppShell>
-  );
-}
-

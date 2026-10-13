@@ -42,20 +42,3 @@ export function Card({
     </main>
   );
 }
-
-export function AppHeader({
-  utilities,
-}: {
-  utilities?: ReactNode;
-}) {
-  return (
-    /*
-      In-flow at the top of the card: the header scrolls away naturally with
-      the page, exactly like the rest of the content.
-    */
-    <div className="mb-11 flex flex-wrap items-center justify-between gap-5 py-3 max-[640px]:mb-8">
-      <div className="text-lg font-bold">CAD</div>
-      {utilities ? <div className="flex items-center gap-1.5">{utilities}</div> : null}
-    </div>
-  );
-}

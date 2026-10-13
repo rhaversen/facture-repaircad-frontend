@@ -156,26 +156,8 @@ export interface DesignFrontend {
 export interface DesignVariant {
   designId: string;
   mesh: GlbModel | null;
-  status: "generating" | "preview" | "ready";
+  status: "generating" | "ready";
   error: string | null;
-}
-
-/*
-  One feedback round. The initial generation round records the candidate
-  ids and the picked design. Every refinement round duplicates the current
-  design once, sends the feedback to that copy, and the copy becomes the
-  next round's current design — a linear version history.
-*/
-export interface ForgeIteration {
-  round: number;
-  /** User feedback for this round; null for the initial generation. */
-  feedback: string | null;
-  /** Design this round duplicated (the previous current design). */
-  sourceDesignId: string;
-  /** Designs this round produced: the refinement copy, or the initial candidates. */
-  variantIds: string[];
-  /** Design carried forward out of this round. */
-  pickedDesignId?: string;
 }
 
 /*

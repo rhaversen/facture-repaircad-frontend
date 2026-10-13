@@ -1,7 +1,8 @@
 "use client";
 
 import RepairProgress from "@/components/RepairProgress";
-import { AppHeader, AppShell, Card } from "@/components/AppShell";
+import type { StepClickStates, StepReasons } from "@/lib/runProgress";
+import { AppShell, Card } from "@/components/AppShell";
 import { MAX_PHOTOS } from "@/hooks/useIntake";
 import type { Photo } from "@/lib/types";
 
@@ -13,8 +14,10 @@ interface DescribeRepairProps {
   onRemovePhoto: (photoId: string) => void;
   onContinue: () => void;
   onNewRun: () => void;
-  onViewRuns: () => void;
-  onLogout: () => void;
+  /* Timeline as navigation: click a reachable step to jump to it. */
+  onStepClick?: (step: number) => void;
+  clickStates?: StepClickStates;
+  reasons?: StepReasons;
 }
 
 export default function DescribeRepair({
@@ -25,29 +28,29 @@ export default function DescribeRepair({
   onRemovePhoto,
   onContinue,
   onNewRun,
-  onViewRuns,
-  onLogout,
+  onStepClick,
+  clickStates,
+  reasons,
 }: DescribeRepairProps) {
   return (
     <AppShell>
       <Card>
-        <AppHeader
-          utilities={
-            <>
-              <button type="button" className="btn-utility" onClick={onNewRun}>
-                New run
-              </button>
-              <button type="button" className="btn-utility" onClick={onViewRuns}>
-                All runs
-              </button>
-              <button type="button" className="btn-ghost" onClick={onLogout}>
-                Sign out
-              </button>
-            </>
-          }
-        />
-
-        <RepairProgress currentStep={1} />
+        <div className="relative mb-6 shrink-0">
+          <button
+            type="button"
+            title="Start a new run"
+            className="btn-utility absolute -top-2 right-0"
+            onClick={onNewRun}
+          >
+            ＋ New run
+          </button>
+          <RepairProgress
+            currentStep={1}
+            onStepClick={onStepClick}
+            clickStates={clickStates}
+            reasons={reasons}
+          />
+        </div>
 
         <h1>Describe your repair</h1>
 

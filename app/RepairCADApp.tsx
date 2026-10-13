@@ -7,21 +7,24 @@ import DescribeRepair from "@/features/intake/DescribeRepair";
 import PhotoAnnotation from "@/features/intake/PhotoAnnotation";
 import ReviewIntake from "@/features/intake/ReviewIntake";
 import CadModelView from "@/features/forge/CadModelView";
-import CaseClarification from "@/features/chat/CaseClarification";
-import FlowChatEmbed, { FlowChatActions } from "@/features/chat/FlowChatEmbed";
+import ClarificationForm from "@/features/chat/ClarificationForm";
+import { FlowChatFrame } from "@/features/chat/FlowChatEmbed";
 import RepairProgress from "@/components/RepairProgress";
-import { AppHeader, AppShell, Card } from "@/components/AppShell";
+import { AppShell, Card } from "@/components/AppShell";
 import { useRepairRun } from "@/hooks/useRepairRun";
 import { useIntake } from "@/hooks/useIntake";
 import { authUrl, getMe, logout } from "@/lib/auth";
 import { buildIntakeMessage, buildClarificationAnnotations } from "@/lib/intakeMessageUtils";
 import { describeMessageContent } from "@/lib/messageContent";
 import {
-  canNavigateToStep,
   deriveScreen,
+  hasUserTurn,
   handoffReadyFor,
+  runShowsProgress,
   screenForSelectedRun,
-  timelineStepToScreen,
+  stepNav,
+  timelineStepStates,
+  type TimelineNavState,
 } from "@/lib/runProgress";
 import { collectHandoffs } from "@/lib/handoffs";
 import { s2NodeId } from "@/lib/pipeline";
@@ -143,24 +146,40 @@ export default function RepairCADApp() {
   }
 
   /*
-    Timeline navigation: clicking a step jumps to the screen it belongs
-    to (steps 5-7 are the CAD workspace, 1-3 the wizard, 4 the
-    conversation). Forward moves inside the wizard are off — the
-    Continue buttons own the one-way guards. Crossing back from CAD to
-    the chat dismisses the handoff so the auto-advance doesn't drag
-    the user straight back.
+    Timeline navigation is decided by stepNav (lib/runProgress) — a pure
+    function of the visible screen plus the run state — so no marker can
+    ever jump into a state that isn't reachable. Every step has some
+    outcome: navigation, a no-op (CAD sub-states), or a lock with a
+    reason (rendered as a disabled marker + tooltip).
   */
+  const timelineState: TimelineNavState = {
+    screen,
+    conversationReady:
+      run !== null && (hasUserTurn(messages) || runShowsProgress(run)),
+    handoffReady: currentHandoffReady,
+    clarificationActive: waitingForCaseClarification,
+    /* The app shell only renders the timeline while screens 1-5 are up
+       (screen 6 renders its own) — CadModelView fills the CAD sub-state
+       fields from Forge itself, so placeholders are safe here. */
+    cadStep: CAD_SCREEN,
+    cadSelectionMade: false,
+    hasFinalGuidance: false,
+  };
+  const { states: stepStates, reasons: stepReasons } = timelineStepStates(
+    timelineState,
+    screen,
+  );
+
   function handleTimelineStep(step: number) {
-    if (!canNavigateToStep(screen, step)) return;
-    const target = timelineStepToScreen(step);
-    if (target === screen) return;
-    /* The CAD workspace needs an actual model to look at. */
-    if (target === CAD_SCREEN && !currentHandoffReady) return;
-    if (target === CHAT_SCREEN && screen === CAD_SCREEN) {
+    const action = stepNav(timelineState, step);
+    if (action.kind !== "navigate") return;
+    /* Leaving CAD dismisses the handoff so the auto-advance doesn't drag
+       the user straight back into the CAD workspace. */
+    if (screen === CAD_SCREEN && action.target < CAD_SCREEN) {
       setHandoffDismissed(true);
     }
-    if (target === 2) intake.openAnnotationScreen();
-    setScreen(target);
+    if (action.target === 2) intake.openAnnotationScreen();
+    setScreen(action.target);
   }
 
   /* Return to the conversation from the CAD workspace; same dismissal
@@ -287,10 +306,6 @@ export default function RepairCADApp() {
     }
   }
 
-  function handleViewRuns() {
-    setScreen(RUN_LIST);
-  }
-
   async function handleLogout() {
     await logout();
     window.location.assign(authUrl());
@@ -387,13 +402,14 @@ export default function RepairCADApp() {
         photos={intake.photos}
         onAddPhotos={intake.addPhotos}
         onRemovePhoto={intake.removePhoto}
+        onStepClick={handleTimelineStep}
+        clickStates={stepStates}
+        reasons={stepReasons}
         onContinue={() => {
           intake.openAnnotationScreen();
           setScreen(2);
         }}
         onNewRun={handleCreateRun}
-        onViewRuns={handleViewRuns}
-        onLogout={handleLogout}
       />
     );
   }
@@ -402,9 +418,22 @@ export default function RepairCADApp() {
     return (
       <AppShell>
         <Card className="!max-w-[1600px] !px-10">
-          <AppHeader />
-
-          <RepairProgress currentStep={2} onStepClick={handleTimelineStep} />
+          <div className="relative mb-6 shrink-0">
+            <button
+              type="button"
+              title="Start a new run"
+              className="btn-utility absolute -top-2 right-0"
+              onClick={handleCreateRun}
+            >
+              ＋ New run
+            </button>
+            <RepairProgress
+              currentStep={2}
+              onStepClick={handleTimelineStep}
+              clickStates={stepStates}
+              reasons={stepReasons}
+            />
+          </div>
 
           <h1>Annotate your photos</h1>
 
@@ -447,7 +476,10 @@ export default function RepairCADApp() {
         photos={intake.photos}
         annotations={intake.annotations}
         onBack={() => setScreen(2)}
+        onNewRun={handleCreateRun}
         onStepClick={handleTimelineStep}
+        clickStates={stepStates}
+        reasons={stepReasons}
         onSubmit={handleSubmit}
         submitting={submitting}
         submissionError={submissionError}
@@ -457,39 +489,46 @@ export default function RepairCADApp() {
 
   if (screen === CHAT_SCREEN) {
     /*
-      One page, two states:
+      One page, two states, both locked to the viewport height (no page
+      scrollbar):
       - While the pipeline sends the case back for clarification there is no
         conversation to follow — the last assistant question is shown as a
         focused card next to the response form instead of the full transcript.
-      - Otherwise the whole conversation embed fills the page, with its own
-        header actions and its own scrolling transcript.
-      Both states are locked to the viewport height (no page scrollbar).
+      - Otherwise the whole conversation fills the rest of the viewport.
+      The corner New run button sits in the corner of the timeline row.
     */
     const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
     const lastQuestion = describeMessageContent(lastAssistant?.content);
 
     return (
       <div className="flex h-dvh flex-col overflow-hidden">
-        <div className="shrink-0 px-6 pb-4 pt-4 max-[640px]:px-5">
-          <RepairProgress currentStep={4} flush onStepClick={handleTimelineStep} />
+        <div className="relative shrink-0 px-6 pb-4 pt-4 max-[640px]:px-5">
+          <button
+            type="button"
+            title="Start a new run"
+            className="btn-utility absolute right-6 top-4 max-[640px]:right-5"
+            onClick={handleCreateRun}
+          >
+            ＋ New run
+          </button>
+          <RepairProgress
+            currentStep={4}
+            flush
+            onStepClick={handleTimelineStep}
+            clickStates={stepStates}
+            reasons={stepReasons}
+            clarificationActive={waitingForCaseClarification}
+          />
         </div>
 
         {waitingForCaseClarification ? (
           <div className="flex min-h-0 flex-1 justify-center overflow-y-auto overscroll-contain px-6 pb-4 max-[640px]:px-4">
             <div className="max-h-full w-full max-w-[860px]">
               <div className="rounded-2xl border border-line bg-white p-6 shadow-[0_1px_3px_rgba(16,24,40,0.06)] max-[640px]:p-4">
-                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                  <div className="text-lg font-bold">Repair clarification</div>
-                  <FlowChatActions
-                    onLogout={handleLogout}
-                    onNewRun={handleCreateRun}
-                    onViewRuns={handleViewRuns}
-                  />
-                </div>
+                <div className="mb-4 text-lg font-bold">Repair clarification</div>
 
-                <CaseClarification
+                <ClarificationForm
                   question={lastQuestion}
-                  embedded
                   onSubmit={handleClarificationSubmit}
                   submitting={clarificationSubmitting}
                   error={clarificationError}
@@ -498,15 +537,16 @@ export default function RepairCADApp() {
             </div>
           </div>
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col px-6 pb-4">
-            <FlowChatEmbed
-              runId={activeRunId}
-              onLogout={handleLogout}
-              onNewRun={handleCreateRun}
-              onViewRuns={handleViewRuns}
-              onOpenCad={() => setScreen(CAD_SCREEN)}
-              cadReady={currentHandoffReady}
-            />
+          <div className="mx-auto flex min-h-0 w-full max-w-[1240px] flex-1 px-6 pb-4 max-[640px]:px-4">
+            <div className="flex min-h-0 w-full flex-col overflow-hidden rounded-xl border border-line bg-white">
+              <div className="flex shrink-0 items-center gap-2 border-b border-line-soft px-4 py-2.5">
+                <span className="inline-block h-1 w-1 rounded-full bg-brand"></span>
+                <span className="text-xs font-medium text-muted-2">Repair planning</span>
+              </div>
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <FlowChatFrame runId={activeRunId} title="Repair planning" />
+              </div>
+            </div>
           </div>
         )}
       </div>

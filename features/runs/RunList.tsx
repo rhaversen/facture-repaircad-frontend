@@ -1,6 +1,6 @@
 "use client";
 
-import { AppHeader, AppShell, Card } from "@/components/AppShell";
+import { AppShell, Card } from "@/components/AppShell";
 import { BUILD_LABEL } from "@/lib/config";
 import type { FlowRun } from "@/lib/types";
 
@@ -40,25 +40,33 @@ export default function RunList({
   return (
     <AppShell>
       <Card>
-        <AppHeader
-          utilities={
-            <button type="button" className="btn-ghost" onClick={onLogout}>
-              Sign out
-            </button>
-          }
-        />
+        <div className="relative mb-6 shrink-0">
+          <div className="flex items-center justify-between gap-3">
+            <h1>Your repairs</h1>
+            <div className="flex shrink-0 items-center gap-2.5">
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={onLogout}
+              >
+                Sign out
+              </button>
+              <button
+                type="button"
+                title="Start a new run"
+                className="btn-utility"
+                onClick={onCreateRun}
+                disabled={creating}
+              >
+                ＋ New run
+              </button>
+            </div>
+          </div>
+        </div>
 
-        <h1>Your repairs</h1>
-
-        <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
+        <p className="mb-9 text-[17px] leading-relaxed text-muted">
           Continue an existing repair run or start a new one.
         </p>
-
-        <div className="mt-8 flex justify-end">
-          <button type="button" onClick={onCreateRun} disabled={busy}>
-            {creating ? "Creating..." : "New run"}
-          </button>
-        </div>
 
         {(error || createError || selectError) && (
           <p className="mt-4 rounded-lg bg-[#fff0f0] px-3.5 py-3 text-sm text-[#a22c2c]">

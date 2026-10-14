@@ -322,7 +322,11 @@ export default function CadModelView({
      screen is up, where this view's own CAD sub-state fields don't
      apply — report the real selection state to it instead. */
   const onCadStateChangeRef = useRef(onCadStateChange);
-  onCadStateChangeRef.current = onCadStateChange;
+  useEffect(() => {
+    // The parent passes a fresh handler each render; mirror it into the
+    // ref so the report effect below can call it without depending on it.
+    onCadStateChangeRef.current = onCadStateChange;
+  });
   useEffect(() => {
     onCadStateChangeRef.current?.({
       cadSelectionMade: designId !== null,
@@ -624,21 +628,62 @@ export default function CadModelView({
             intro="Ask to change the model, clarify a measurement, or inspect the current repair design."
           />
         </div>
+      ) : phase === "finalizing" ? (
+        /* Calibrated parameters are being written back to the design —
+           keep the model in place behind the spinner until settled. */
+        <div className="flex min-h-[600px] flex-1 flex-col gap-6">
+          <div className="shrink-0">
+            <h1 className="pt-6 text-[30px]">Finalizing the model…</h1>
+            <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
+              Writing the calibrated parameters back to the design — the final
+              model is a moment.
+            </p>
+          </div>
+          <ViewportFrame
+            className="min-w-0 flex-1"
+            model={model}
+            generating={true}
+            fitKey={designId}
+            designId={designId}
+            guides={guides}
+            guideVisible={guideVisible}
+            spinnerLabel={spinnerLabel}
+            dimmed={modelPending}
+          />
+        </div>
       ) : (
+        /* Ready (CAD sub-step 7): the final model on the left, the repair
+           guidance document on the right — the same layout rhythm as the
+           calibration screen. */
         <div className="flex min-h-[600px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
           <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-            <div className="mb-6 shrink-0">
-              <h1 className="text-[30px]">
-                {phase === "ready"
-                  ? "Provisional CAD model"
-                  : "Generating model..."}
-              </h1>
-              <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
-                Generated from your repair handoff via Facture Forge.
-              </p>
+            <div className="mb-6 flex shrink-0 items-start justify-between gap-5 max-[800px]:flex-col">
+              <div>
+                <h1 className="pt-6 text-[30px]">
+                  {phase === "ready"
+                    ? "Final repair model"
+                    : "Generating model..."}
+                </h1>
+                <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
+                  Rendered from the calibrated design via Facture Forge. The
+                  repair guidance on the right is drafted from this final
+                  model.
+                </p>
+              </div>
+              {phase === "ready" && designId !== null && model !== null && (
+                <button
+                  type="button"
+                  title="Download the loaded model as STL"
+                  onClick={handleDownload}
+                  className="btn-secondary shrink-0 mt-6 max-[800px]:w-full"
+                >
+                  Download STL
+                </button>
+              )}
             </div>
 
             <ViewportFrame
+              className="min-w-0 flex-1"
               model={model}
               generating={isLoading}
               fitKey={designId}
@@ -648,77 +693,57 @@ export default function CadModelView({
               spinnerLabel={spinnerLabel}
               dimmed={modelPending}
             />
-
-            {phase === "ready" && (
-              <div className="mt-6 flex shrink-0 gap-3">
-                {designId !== null && (
-                  <button
-                    type="button"
-                    title="Download the loaded model as STL"
-                    onClick={handleDownload}
-                    className="btn-secondary"
-                  >
-                    Download STL
-                  </button>
-                )}
-                {finalGuidance && (
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={handleDownloadFinalGuidance}
-                  >
-                    Download repair instructions
-                  </button>
-                )}
-              </div>
-            )}
           </section>
-        </div>
-      )}
 
-      {showFinalGuidanceSection && (
-        <section
-          id="repair-guidance-section"
-          className="mt-6 shrink-0 rounded-xl border border-line bg-surface p-6"
-        >
-          <div className="mb-5 flex items-start justify-between gap-5 max-[800px]:flex-col">
-            <div>
-              <h2 className="mb-1.5 text-xl">Repair instructions</h2>
-              <p className="m-0 text-sm leading-relaxed text-muted-2">
-                Final fabrication, assembly, and installation guidance for this
-                repair.
-              </p>
-            </div>
-            {finalGuidance && (
-              <button
-                type="button"
-                className="btn-secondary max-[800px]:w-full"
-                onClick={handleDownloadFinalGuidance}
-              >
-                Download instructions
-              </button>
-            )}
-          </div>
-
-          {finalGuidance ? (
-            <div className="markdown-body max-h-[40vh] overflow-y-auto overscroll-contain rounded-[10px] border border-line bg-white p-5 leading-[1.65]">
-              <ReactMarkdown>{finalGuidance}</ReactMarkdown>
-            </div>
-          ) : (
-            <div
-              className={
-                guidanceError
-                  ? "rounded-[10px] border border-dashed border-red-300 bg-white p-5 leading-relaxed text-red-700"
-                  : "rounded-[10px] border border-dashed border-[#cbd0d6] bg-white p-5 leading-relaxed text-[#7a828d]"
-              }
+          {showFinalGuidanceSection && (
+            <aside
+              id="repair-guidance-section"
+              className="mt-6 flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-white lg:flex-1 max-[800px]:max-w-full"
             >
-              {guidanceError ||
-                (refinementRunId
-                  ? "The repair guidance document is being generated and will appear here the moment it arrives."
-                  : "Final repair instructions will appear here when the repair design is complete.")}
-            </div>
+              <div className="shrink-0 border-b border-line-soft px-6 py-5 max-[800px]:px-5">
+                <div className="flex items-start justify-between gap-5 max-[800px]:flex-col">
+                  <div>
+                    <h2 className="mb-1.5 text-xl">Repair instructions</h2>
+                    <p className="m-0 text-sm leading-relaxed text-muted-2">
+                      Final fabrication, assembly, and installation guidance
+                      for this repair.
+                    </p>
+                  </div>
+                  {finalGuidance && (
+                    <button
+                      type="button"
+                      className="btn-secondary shrink-0 max-[800px]:w-full"
+                      onClick={handleDownloadFinalGuidance}
+                    >
+                      Download instructions
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {finalGuidance ? (
+                <div className="markdown-body min-h-0 flex-1 overflow-y-auto px-6 py-5 leading-[1.65] max-[800px]:max-h-[40vh] max-[800px]:overflow-y-auto">
+                  <ReactMarkdown>{finalGuidance}</ReactMarkdown>
+                </div>
+              ) : (
+                <div className="min-h-0 flex-1 px-6 py-5 max-[800px]:max-h-[40vh] max-[800px]:overflow-y-auto">
+                  <div
+                    className={
+                      guidanceError
+                        ? "rounded-[10px] border border-dashed border-red-300 p-5 leading-relaxed text-red-700"
+                        : "rounded-[10px] border border-dashed border-[#cbd0d6] p-5 leading-relaxed text-[#7a828d]"
+                    }
+                  >
+                    {guidanceError ||
+                      (refinementRunId
+                        ? "The repair guidance document is being generated and will appear here the moment it arrives."
+                        : "Final repair instructions will appear here when the repair design is complete.")}
+                  </div>
+                </div>
+              )}
+            </aside>
           )}
-        </section>
+        </div>
       )}
     </Page>
   );

@@ -300,14 +300,6 @@ export function useIntake(
     [annotations, effectiveActivePhotoId],
   );
 
-  const hasMeasurementReference = useMemo(
-    () =>
-      annotations.some(
-        (annotation) => (annotation.sizeReference?.knownDimension ?? 0) > 0,
-      ),
-    [annotations],
-  );
-
   const resetIntake = useCallback(() => {
     setDescription("");
     photos.forEach((photo) => URL.revokeObjectURL(photo.previewUrl));
@@ -344,7 +336,6 @@ export function useIntake(
     updateAnnotation,
     updateAnnotationSizeReference,
     deleteAnnotation,
-    hasMeasurementReference,
     resetIntake,
   };
 }

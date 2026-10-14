@@ -52,20 +52,20 @@ export default function PhotoAnnotation({
   } = intake;
 
   const gridClassName = compact
-    ? "grid grid-cols-[minmax(0,1fr)] max-[330px]:grid-cols-[minmax(0,1fr)] min-[331px]:max-[640px]:grid-cols-[minmax(0,0.75fr)_minmax(0,1fr)] min-[641px]:grid-cols-[minmax(0,0.75fr)_minmax(0,1.4fr)_minmax(0,1fr)]"
-    : "grid grid-cols-[200px_minmax(0,1fr)_300px] items-start gap-7 max-[900px]:grid-cols-1";
+    ? "grid gap-4 grid-cols-[minmax(0,1fr)] max-[330px]:grid-cols-[minmax(0,1fr)] min-[331px]:max-[640px]:grid-cols-[minmax(0,0.75fr)_minmax(0,1fr)] min-[641px]:grid-cols-[minmax(0,0.75fr)_minmax(0,1.4fr)_minmax(0,1fr)]"
+    : "grid grid-cols-[200px_minmax(0,1fr)_380px] items-start gap-7 max-[1000px]:grid-cols-1";
   const asideWrapClassName = compact
     ? "min-w-0 max-[640px]:flex max-[640px]:gap-2.5 max-[640px]:overflow-x-auto"
-    : "min-w-0 max-[900px]:flex max-[900px]:gap-2.5 max-[900px]:overflow-x-auto";
+    : "min-w-0 max-[1000px]:flex max-[1000px]:gap-2.5 max-[1000px]:overflow-x-auto";
   const photosHeadingClassName = compact
     ? "mb-3.5 text-base max-[640px]:hidden"
-    : "mb-3.5 text-base max-[900px]:hidden";
+    : "mb-3.5 text-base max-[1000px]:hidden";
   const photoCardWidthClassName = compact
     ? "max-[640px]:min-w-[140px]"
-    : "max-[900px]:min-w-[140px]";
+    : "max-[1000px]:min-w-[140px]";
   const panelClassName = compact
     ? "min-w-0 rounded-xl border border-[#e5e8ec] bg-surface p-5 max-[640px]:p-4"
-    : "min-w-0 rounded-xl border border-[#e5e8ec] bg-surface p-5 max-[900px]:p-4";
+    : "min-w-0 rounded-xl border border-[#e5e8ec] bg-surface p-5 max-[1000px]:p-4";
 
   if (photos.length === 0) return null;
 

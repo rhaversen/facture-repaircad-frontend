@@ -58,6 +58,11 @@ export default function ClarificationForm({
 
   return (
     <form onSubmit={handleSubmit}>
+      <h1 className="mb-3 pt-6">Repair clarification</h1>
+      <p className="mb-9 text-[17px] leading-relaxed text-muted">
+        Answer the question below. A photo is a perfectly good answer too.
+      </p>
+
       <div className="mb-6 grid items-start gap-4 max-[720px]:grid-cols-1 min-[721px]:grid-cols-2">
         {question && (
           <div className="wrap-break-word self-stretch rounded-lg bg-surface p-4 text-ink-soft">{question}</div>
@@ -87,11 +92,13 @@ export default function ClarificationForm({
           mark important parts of each photo.
         </p>
 
-        {/* px-4.5 + the transparent border lift the submit button to exactly
-            the same box size as the "Choose photos" label (py-3 px-4.5 + 1px border) */}
+        {/* Both actions carry py-3 px-4.5; the label's margins are zeroed
+            because the global label rule adds its own mt/mb, which would
+            offset the in-row centering — boxes line up exactly on the
+            flex row */}
         <div className="mt-2 flex flex-wrap items-center justify-end gap-3">
-          <label className="inline-flex cursor-pointer items-center justify-center rounded-[10px] border border-brand bg-white px-4.5 py-3 font-semibold text-brand hover:bg-[#f6f8ff]">
-            Choose photos
+          <label className="inline-flex cursor-pointer items-center justify-center rounded-[10px] border border-brand bg-white px-4.5 py-3 font-semibold text-brand hover:bg-[#f6f8ff] mt-0 mb-0">
+            Attach more photos
             <input
               type="file"
               accept="image/*"
@@ -105,7 +112,7 @@ export default function ClarificationForm({
 
           <button
             type="submit"
-            className="border border-transparent px-4.5"
+            className="border border-transparent px-4.5 py-3"
             disabled={submitting || (!response.trim() && photos.length === 0)}
           >
             {submitting ? "Sending…" : "Continue"}
@@ -114,12 +121,19 @@ export default function ClarificationForm({
       </div>
 
       {photos.length > 0 && (
-        <PhotoAnnotation
-          intake={intake}
-          compact
-          withRemovePhoto
-          panelHint="Drag on the photo to add an annotation, then name it below."
-        />
+        <div
+          /* The action row above is a normal block, so the grid needs
+             its own separation from it - the grid gap only spaces
+             its columns. */
+          className="mt-5"
+        >
+          <PhotoAnnotation
+            intake={intake}
+            compact
+            withRemovePhoto
+            panelHint="Drag on the photo to add an annotation, then name it below."
+          />
+        </div>
       )}
 
       {error && (

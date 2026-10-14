@@ -19,6 +19,7 @@ function ParameterRow({
 	active,
 	hasGuides,
 	onSelect,
+	onShowGuideCamera,
 }: {
 	parameter: Parameter;
 	disabled: boolean;
@@ -27,6 +28,9 @@ function ParameterRow({
 	active: boolean;
 	hasGuides: boolean;
 	onSelect: (name: string | null) => void;
+	/** Reframes the viewport on this parameter's guide (button click only —
+	 *  row hover/click stays selection-only). */
+	onShowGuideCamera?: (name: string) => void;
 }) {
 	const { min, max, unit, kind } = parameter;
 	const boundedMax = Math.max(max, min + 0.1);
@@ -131,11 +135,16 @@ function ParameterRow({
 					{hasGuides ? (
 						<button
 							type="button"
-							// Selection-only control: it never toggles off. The one
-							// active set is replaced by hovering/clicking any other
-							// row, so there is no separate hide action to name.
-							onClick={() => onSelect(parameter.name)}
-							title="Show guides"
+							// Stop the row's click from double-selecting this
+							// parameter, then select it and reframe the camera
+							// on the guide (hover already selected it — the
+							// camera move is the button's job).
+							onClick={(e) => {
+								e.stopPropagation();
+								onSelect(parameter.name);
+								onShowGuideCamera?.(parameter.name);
+							}}
+							title="Show guides and frame them in the viewport"
 							className={active
 								? "rounded bg-transparent px-1 text-[11px] font-medium text-[#1d3a99] hover:bg-[#eef2fb]"
 								: "rounded bg-transparent px-1 text-[11px] text-[#616975] hover:bg-[#eef2fb] hover:text-[#1d3a99]"}
@@ -207,6 +216,9 @@ function ParameterRow({
 }
 
 interface CalibrationPanelProps {
+	/** Layout hint from the parent row — e.g. the calibration column's
+	 *  equal one-third width on wide screens. */
+	className?: string;
 	parameters: Parameter[];
 	confirmedValues: Record<string, number>;
 	settingParam: string | null;
@@ -217,6 +229,9 @@ interface CalibrationPanelProps {
 	/** Selects a parameter's guides (deselecting all others) or, with
 	 *  null, deselects everything. */
 	onSelectGuides: (name: string | null) => void;
+	/** Reframes the viewport on a parameter's guide (Option B camera).
+	 *  Fired only by the rows' "show guide" button. */
+	onShowGuideCamera?: (name: string) => void;
 	guidesAvailable: (name: string) => boolean;
 }
 
@@ -226,6 +241,7 @@ interface CalibrationPanelProps {
  *  show-guide control on the label line. The footer button renders the
  *  final model. */
 export default function CalibrationPanel({
+	className,
 	parameters,
 	confirmedValues,
 	settingParam,
@@ -233,10 +249,11 @@ export default function CalibrationPanel({
 	onFinish,
 	activeParam,
 	onSelectGuides,
+	onShowGuideCamera,
 	guidesAvailable,
 }: CalibrationPanelProps) {
 	return (
-		<div className="flex w-[21rem] flex-col gap-2.5 rounded-xl border border-[#e1e4e8] bg-[#f7f8fa] p-3 shadow-sm">
+		<div className={`flex w-full flex-col gap-2.5 self-stretch rounded-xl bg-[#f7f8fa] p-3 ${className ?? ""}`}>
 			<div>
 				<h2 className="mb-1 text-[15px] font-semibold">
 					Calibrate the model
@@ -256,6 +273,7 @@ export default function CalibrationPanel({
 						active={activeParam === parameter.name}
 						hasGuides={guidesAvailable(parameter.name)}
 						onSelect={onSelectGuides}
+						onShowGuideCamera={onShowGuideCamera}
 					/>
 				))}
 			</div>

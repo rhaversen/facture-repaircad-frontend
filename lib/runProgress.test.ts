@@ -8,6 +8,7 @@ import {
   hasUserTurn,
   runShowsProgress,
   screenForSelectedRun,
+  CONVERSATION_STEP,
   stepNav,
   timelineStepStates,
   timelineStepToScreen,
@@ -292,11 +293,27 @@ describe("stepNav — conversation screen", () => {
     );
   });
 
-  it("navigates to the CAD workspace once the handoff is ready", () => {
+  it("lets the picker navigate once the handoff is ready, but keeps state and guidance locked until a design is chosen", () => {
     const ready = nav({ handoffReady: true });
+    expectNav(ready, 5, { kind: "navigate", target: CAD_SCREEN });
+    [6, 7].forEach((step) =>
+      expectNav(ready, step, { kind: "locked", reason: SELECT_DESIGN }),
+    );
+  });
+
+  it("navigates to the CAD workspace for all sub-steps once a design is chosen", () => {
+    const ready = nav({ handoffReady: true, cadSelectionMade: true });
     [5, 6, 7].forEach((step) =>
       expectNav(ready, step, { kind: "navigate", target: CAD_SCREEN }),
     );
+    /* Step 7's final-guidance gate is re-applied on the CAD screen
+       itself, so it stays navigable from off-screen even without guidance. */
+    const noGuidance = nav({
+      handoffReady: true,
+      cadSelectionMade: true,
+      hasFinalGuidance: false,
+    });
+    expectNav(noGuidance, 7, { kind: "navigate", target: CAD_SCREEN });
   });
 });
 
@@ -342,15 +359,31 @@ describe("stepNav — CAD workspace", () => {
     handoffReady: true,
   });
 
-  it("steps 1-4 go back to the conversation from any sub-state", () => {
-    [1, 2, 3, 4].forEach((step) =>
+  it("locks intake steps but keeps the conversation marker reachable", () => {
+    // The fixture conversation has started, so steps 1-3 lift into it —
+    // they cannot be re-entered from the CAD workspace either.
+    [1, 2, 3].forEach((step) =>
       expectNav(
         calibration,
         step,
-        { kind: "navigate", target: CHAT_SCREEN },
+        { kind: "locked", reason: CONVERSATION },
       ),
     );
-    expectNav(guidance, 1, { kind: "navigate", target: CHAT_SCREEN });
+    // Only the conversation marker itself goes back to the chat.
+    [calibration, guidance].forEach((s) =>
+      expectNav(s, 4, { kind: "navigate", target: CHAT_SCREEN }),
+    );
+
+    // Without a started conversation the intake steps are open.
+    const freshCad = nav({
+      screen: CAD_SCREEN,
+      cadStep: 5,
+      conversationReady: false,
+      handoffReady: true,
+    });
+    [1, 2, 3].forEach((step) =>
+      expectNav(freshCad, step, { kind: "navigate", target: CHAT_SCREEN }),
+    );
   });
 
   it("is a no-op on the visible sub-state marker", () => {
@@ -386,16 +419,34 @@ describe("stepNav — CAD workspace", () => {
 });
 
 describe("timelineStepStates", () => {
-  it("omits the visible screen", () => {
+  it("omits the current marker, not the screen number", () => {
     const { states } = timelineStepStates(nav(), CHAT_SCREEN);
-    expect(5 in states).toBe(false);
+    // The conversation uses marker 4 even though its screen number is 5.
+    expect(CONVERSATION_STEP in states).toBe(false);
+    // Step 5 is a real, reachable-or-locked step from the conversation.
+    expect(states[5]).toBe("disabled");
+  });
+
+  it("locks the CAD sub-states while a clarification is pending", () => {
+    const { states, reasons } = timelineStepStates(
+      nav({ clarificationActive: true }),
+      CHAT_SCREEN,
+    );
+    expect(states[5]).toBe("disabled");
+    expect(states[6]).toBe("disabled");
+    expect(states[7]).toBe("disabled");
+    for (const step of [5, 6, 7]) {
+      expect(reasons[step]).toBe(
+        "Answer the clarification question before moving on.",
+      );
+    }
   });
 
   it("marks a step disabled exactly when stepNav locks it", () => {
     const state = nav();
     const { states, reasons } = timelineStepStates(state, CHAT_SCREEN);
     for (let step = 1; step <= 7; step++) {
-      if (step === CHAT_SCREEN) continue;
+      if (step === CONVERSATION_STEP) continue;
       const action = stepNav(state, step);
       if (action.kind === "locked") {
         expect(states[step]).toBe("disabled");

@@ -1,13 +1,52 @@
 "use client";
 
-import { AppShell, Card } from "@/components/AppShell";
+import Page from "@/components/Page";
 import { BUILD_LABEL } from "@/lib/config";
+import { collectHandoffs } from "@/lib/handoffs";
 import type { FlowRun } from "@/lib/types";
 
 function formatRunDate(value: string | undefined) {
   if (!value) return "";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+}
+
+function hasText(value: unknown): boolean {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+/*
+  Replaces the raw status chip with a stage word the user already
+  knows from the timeline. Priority: design ready (CAD handoffs
+  exist) → parked at the post-intake clarification (S2 node) → intake
+  not yet submitted → intake in flight → everything else settled.
+*/
+function runStage(
+  run: FlowRun,
+  s2NodeId: string | null
+): string {
+  if (run.status === "failed") return "Failed";
+  if (collectHandoffs(run.runningDoc).length > 0) return "Design ready";
+  const clarification =
+    s2NodeId !== null && run.currentNodeId === s2NodeId;
+  if (clarification) {
+    return run.status === "running"
+      ? "Clarifying model details…"
+      : "Awaiting your clarification";
+  }
+  if (run.runningDoc == null || !hasText(run.runningDoc.forge_instruction))
+    return "Setting up your repair";
+  if (run.status === "running") return "Analyzing repair…";
+  return "Ready for generation";
+}
+
+/* Failed → red, intake → neutral gray, every other stage → the
+   timeline's brand-blue tint. */
+function runStageClasses(stage: string): string {
+  if (stage === "Failed") return "bg-[#fff0f0] text-[#a22c2c]";
+  if (stage === "Setting up your repair")
+    return "bg-[#e7e9ed] text-ink-soft";
+  return "bg-[#eef2fb] text-[#2c67d7]";
 }
 
 interface RunListProps {
@@ -18,6 +57,9 @@ interface RunListProps {
   createError: string;
   selecting: boolean;
   selectError: string;
+  /** pipeline.ts node id of the post-intake clarification step, used
+    to label runs parked there waiting for the case clarification. */
+  s2NodeId?: string | null;
   onCreateRun: () => void;
   onSelectRun: (runId: string) => void;
   onLogout: () => void;
@@ -31,6 +73,7 @@ export default function RunList({
   createError,
   selecting,
   selectError,
+  s2NodeId = null,
   onCreateRun,
   onSelectRun,
   onLogout,
@@ -38,37 +81,29 @@ export default function RunList({
   const busy = loading || creating || selecting;
 
   return (
-    <AppShell>
-      <Card>
-        <div className="relative mb-6 shrink-0">
-          <div className="flex items-center justify-between gap-3">
-            <h1>Your repairs</h1>
-            <div className="flex shrink-0 items-center gap-2.5">
-              <button
-                type="button"
-                className="btn-ghost"
-                onClick={onLogout}
-              >
-                Sign out
-              </button>
-              <button
-                type="button"
-                title="Start a new run"
-                className="btn-utility"
-                onClick={onCreateRun}
-                disabled={creating}
-              >
-                ＋ New run
-              </button>
-            </div>
-          </div>
+    <Page>
+      <div className="flex items-center justify-between gap-3 pt-6">
+        <h1>Your repairs</h1>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="rounded-full bg-brand px-3.5 py-1.5 text-[13px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            disabled={busy}
+            onClick={onCreateRun}
+          >
+            ＋ New repair
+          </button>
+          <button type="button" className="btn-ghost" onClick={onLogout}>
+            Sign out
+          </button>
         </div>
+      </div>
 
-        <p className="mb-9 text-[17px] leading-relaxed text-muted">
-          Continue an existing repair run or start a new one.
-        </p>
+      <p className="mb-9 mt-3 text-[17px] leading-relaxed text-muted">
+        Continue an existing repair run or start a new one.
+      </p>
 
-        {(error || createError || selectError) && (
+      {(error || createError || selectError) && (
           <p className="mt-4 rounded-lg bg-[#fff0f0] px-3.5 py-3 text-sm text-[#a22c2c]">
             {error || createError || selectError}
           </p>
@@ -78,7 +113,7 @@ export default function RunList({
           <p className="mt-6 text-faint">Loading runs...</p>
         ) : runs.length === 0 ? (
           <p className="mt-6 text-faint">
-            No runs yet. Start your first repair with &quot;New run&quot;.
+            No repairs yet. Start your first one with &quot;New repair&quot;.
           </p>
         ) : (
           <ul className="mt-6 flex list-none flex-col gap-3 p-0">
@@ -94,17 +129,11 @@ export default function RunList({
                     <span className="flex items-center gap-2.5 font-semibold">
                       Repair run
                       <span
-                        className={`rounded-full px-2 py-0.5 text-[11px] font-semibold tracking-wide uppercase ${
-                          candidate.status === "running"
-                            ? "bg-brand-soft text-brand"
-                            : candidate.status === "idle"
-                              ? "bg-[#e5f5ea] text-[#1d7a3d]"
-                              : candidate.status === "failed"
-                                ? "bg-[#fff0f0] text-[#a22c2c]"
-                                : "bg-[#e7e9ed] text-ink-soft"
-                        }`}
+                        className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${runStageClasses(
+                          runStage(candidate, s2NodeId)
+                        )}`}
                       >
-                        {candidate.status}
+                        {runStage(candidate, s2NodeId)}
                       </span>
                     </span>
 
@@ -123,8 +152,7 @@ export default function RunList({
           </ul>
         )}
 
-        <div className="mt-8 text-xs text-faint-2">Build {BUILD_LABEL}</div>
-      </Card>
-    </AppShell>
+      <div className="mt-8 text-xs text-faint-2">Build {BUILD_LABEL}</div>
+    </Page>
   );
 }

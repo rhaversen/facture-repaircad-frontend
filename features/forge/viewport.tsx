@@ -292,6 +292,140 @@ function CameraFit({
   return null;
 }
 
+/** One-shot guide reframe request: display-space frame centre + radius, and
+ *  a monotonically increasing nonce so repeat clicks on the same param
+ *  re-trigger the camera move (an equal nonce is treated as already
+ *  applied). */
+export interface GuideFrameRequest {
+	center: [number, number, number];
+	radius: number;
+	nonce: number;
+}
+
+/* Seconds for the eased glide between guide frame positions. */
+const GUIDE_FRAME_DURATION_MS = 900;
+function easeInOutCubic(t: number) {
+	return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+/*
+  Guide framing: camera, guide and world origin sit collinear — the
+  camera stays on the far side of the guide, looking through it
+  toward the origin. The distance starts at whatever is needed for
+  the guide's frame sphere to fit, floored at half the distance that
+  fits the whole model (the auto position can never zoom closer than
+  that). Every move eases from the camera's current position, so a
+  click mid-glide retargets from wherever the camera is; a user drag
+  cancels the glide and OrbitControls resumes from the hand-off.
+  Runs once per nonce — and only when the makeDefault OrbitControls
+  exist, which they may not on the very first tick after a canvas
+  mount, hence the deferred guard below.
+*/
+function GuideReframe({
+	frame,
+	model,
+}: {
+	frame: GuideFrameRequest | null;
+	model: GlbModel | null;
+}) {
+	const camera = useThree((state) => state.camera) as THREE.PerspectiveCamera;
+	const controls = useThree((state) => state.controls) as
+		| (THREE.EventDispatcher & {
+				target: THREE.Vector3;
+				update: () => void;
+			})
+		| null;
+	const appliedNonce = useRef<number | null>(null);
+	const glide = useRef<{
+		fromPos: THREE.Vector3;
+		fromTarget: THREE.Vector3;
+		toPos: THREE.Vector3;
+		toTarget: THREE.Vector3;
+		start: number;
+	} | null>(null);
+
+	// Imperative three.js camera/controls mutation is intentional here.
+	/* eslint-disable react-hooks/immutability */
+	useEffect(() => {
+		if (frame === null) {
+			appliedNonce.current = null;
+			glide.current = null;
+			return;
+		}
+		if (!controls || appliedNonce.current === frame.nonce) return;
+		appliedNonce.current = frame.nonce;
+
+		const center = new THREE.Vector3(...frame.center);
+		const u =
+			center.lengthSq() > 1e-12
+				? center.clone().normalize()
+				: new THREE.Vector3(1, 0.55, 1.3).normalize();
+
+		const vHalf = ((camera.fov / 2) * Math.PI) / 180;
+		const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+		const half = Math.min(vHalf, hHalf);
+		let distance = (frame.radius / Math.sin(half)) * 1.4;
+		if (model !== null) {
+			const bounds = meshDisplayBounds(model.scene);
+			if (bounds !== null) {
+				// CameraFit frames the whole model both pivot-relative and
+				// limit-relative; halving that distance is the max zoom-in
+				// the auto position may reach.
+				const wholeModel = (bounds.radius / Math.sin(half)) * 1.6;
+				distance = Math.max(distance, wholeModel / 2);
+			}
+		}
+
+		const toPos = center.clone().addScaledVector(u, distance);
+		const toTarget = center.clone();
+		camera.near = Math.max(0.01, distance / 500);
+		camera.far = Math.max(500, (distance + center.length()) * 20);
+		camera.updateProjectionMatrix();
+
+		// Rebase from the live position so an interrupted glide or a
+		// manual orbit never jumps.
+		glide.current = {
+			fromPos: camera.position.clone(),
+			fromTarget: controls.target.clone(),
+			toPos,
+			toTarget,
+			start: performance.now(),
+		};
+	}, [frame, camera, controls, model]);
+
+	useEffect(() => {
+		if (controls === null) return;
+		const dispatcher = controls as unknown as {
+			addEventListener(type: string, handler: () => void): void;
+			removeEventListener(type: string, handler: () => void): void;
+		};
+		const cancel = () => {
+			glide.current = null;
+		};
+		dispatcher.addEventListener("start", cancel);
+		return () => {
+			dispatcher.removeEventListener("start", cancel);
+		};
+	}, [controls]);
+
+	useFrame(() => {
+		const active = glide.current;
+		if (active === null || controls === null) return;
+		const t = Math.min(
+			1,
+			(performance.now() - active.start) / GUIDE_FRAME_DURATION_MS,
+		);
+		const k = easeInOutCubic(t);
+		camera.position.lerpVectors(active.fromPos, active.toPos, k);
+		controls.target.lerpVectors(active.fromTarget, active.toTarget, k);
+		controls.update();
+		if (t >= 1) glide.current = null;
+	});
+	/* eslint-enable react-hooks/immutability */
+
+	return null;
+}
+
 /** Parametric guides rendered over the model: the backend sources the guide
  *  geometry from the same dimensions the parameters control, so the lines
  *  always agree with the current revision. Visibility is single
@@ -359,6 +493,7 @@ export function CadCanvas({
   designId,
   guides,
   guideVisible,
+  guideFrame = null,
 }: {
   children: React.ReactNode;
   generating: boolean;
@@ -367,6 +502,8 @@ export function CadCanvas({
   designId?: string | null;
   guides?: Guide[];
   guideVisible?: (name: string) => boolean;
+  /** Reframe the camera on a param's guide (Option B — see GuideReframe). */
+  guideFrame?: GuideFrameRequest | null;
 }) {
   const model = fitModel;
   return (
@@ -380,6 +517,7 @@ export function CadCanvas({
         <ForgeStudio fitKey={fitKey} fitModel={fitModel} />
         <Suspense fallback={generating ? <LoadingSpinner /> : null}>{children}</Suspense>
         <CameraFit fitKey={fitKey} model={model} />
+        <GuideReframe frame={guideFrame} model={model} />
         {guides !== undefined ? (
           <Guides
             guides={guides}

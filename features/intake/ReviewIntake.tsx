@@ -15,7 +15,7 @@ interface ReviewIntakeProps {
   photos: Photo[];
   annotations: Annotation[];
   onBack: () => void;
-  onNewRun: () => void;
+  onAllRuns: () => void;
   onSubmit: (annotatedCopies: Record<string, AnnotatedCopy>) => void;
   submitting: boolean;
   submissionError: string;
@@ -34,7 +34,7 @@ export default function ReviewIntake({
   photos,
   annotations,
   onBack,
-  onNewRun,
+  onAllRuns,
   onSubmit,
   submitting,
   submissionError,
@@ -85,13 +85,16 @@ export default function ReviewIntake({
   return (
     <Page
       currentStep={3}
-      onNewRun={onNewRun}
+      onAllRuns={onAllRuns}
       onStepClick={onStepClick}
       clickStates={clickStates}
       reasons={reasons}
-      title="Review your repair"
-      subtitle="Check the information below before submitting."
     >
+      <h1 className="mb-3">Review your repair</h1>
+      <p className="mb-9 text-[17px] leading-relaxed text-muted">
+        Check the information below before submitting.
+      </p>
+
       <div className="mt-8">
       <h2 className="mb-2.5 text-lg">Repair description</h2>
       <p>{description}</p>

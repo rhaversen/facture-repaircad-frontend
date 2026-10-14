@@ -1,22 +1,23 @@
 import * as THREE from "three";
-import type { Guide } from "@/lib/types";
+import type { Guide, GuideEnd } from "@/lib/types";
 
-// Muted gold for visible guides; the active parameter's guides brighten
-// into the highlight family (same amber hue as the hover emissive) so
-// they stand out against the model itself — since only one parameter's
-// guides are shown at a time, no two shades coexist on screen.
-const BASE_COLOR = 0xb89a3c;
-const HOVER_COLOR = 0xffe066;
+// Blue guides: Forge models are uniformly yellow, so a blue family gives
+// the line maximum contrast against the model itself. The active
+// parameter's guides brighten (base = brand blue, selected = bright blue)
+// — since only one parameter's guides are shown at a time, no two shades
+// actually coexist on screen.
+const BASE_COLOR = 0x2448b8;
+const HOVER_COLOR = 0x5f8bff;
 
 // Blueprint-style proportions in SCREEN pixels: every mesh is built from
 // shared unit geometry and scaled per frame by the world length of one
 // CSS pixel at its own anchor, so a guide always covers the same number
 // of pixels no matter the model size or zoom level.
-const SHAFT_DIAMETER_PX = 3;
-const ARROW_LENGTH_PX = 14;
-const ARROW_WIDTH_PX = 6;
-const VERTEX_DIAMETER_PX = 8;
-const BUTT_DISK_DIAMETER_PX = 8;
+const SHAFT_DIAMETER_PX = 5;
+const ARROW_LENGTH_PX = 22;
+const ARROW_WIDTH_PX = 10;
+const VERTEX_DIAMETER_PX = 12;
+const BUTT_DISK_DIAMETER_PX = 12;
 // Disk thickness as a fraction of its diameter — a hairline "tick".
 const BUTT_DISK_THICKNESS_RATIO = 0.02;
 
@@ -25,6 +26,29 @@ const BUTT_DISK_THICKNESS_RATIO = 0.02;
  *  spread over `viewportHeight` CSS pixels). */
 function pixelsToWorld(camera: THREE.PerspectiveCamera, distance: number, viewportHeight: number): number {
 	return (2 * distance * Math.tan((camera.fov * Math.PI) / 360)) / viewportHeight;
+}
+
+/** The rotation the backend bakes into every GLB root: -90° about X turns
+ *  the design's Z-up coordinates into the renderer's Y-up display space.
+ *  Guide endpoints ship in the Z-up design world, so framing math applies
+ *  this same rotation to stay in the space the model is actually drawn in. */
+export const DESIGN_TO_DISPLAY = new THREE.Euler(-Math.PI / 2, 0, 0);
+
+/** Framing of one guide, in the same display space the overlay group
+ *  renders in. `center` anchors the frame at the guide's most important
+ *  point (the span mid-point of a distance guide, the vertex of an angle
+ *  guide) and `radius` is the distance from that anchor to the farthest
+ *  other endpoint, padded so the line's own markers — arrowheads and butt
+ *  disks — clear the viewport edge after the fit. */
+export function guideFrameBox(guide: Guide): { center: THREE.Vector3; radius: number } {
+	// The rotation preserves lengths, so span distances equal the
+	// design-space measurements either way.
+	const toDisplay = (end: GuideEnd) => new THREE.Vector3(...end.world).applyEuler(DESIGN_TO_DISPLAY);
+	const from = toDisplay(guide.from);
+	const to = toDisplay(guide.to);
+	const anchor = guide.kind === "angle" ? toDisplay(guide.vertex) : from.clone().add(to).multiplyScalar(0.5);
+	const radius = Math.max(from.distanceTo(anchor), to.distanceTo(anchor));
+	return { center: anchor, radius: radius * 1.2 };
 }
 
 export interface GuidesOverlay {
@@ -57,13 +81,24 @@ export function createGuidesOverlay(): GuidesOverlay {
 	const group = new THREE.Group();
 	group.rotation.x = -Math.PI / 2;
 	group.visible = false;
+	// Both materials are fully unlit and fully opaque: the guide must read as
+	// a crisp blueprint line over the model, so a lit surface (bright key
+	// side or shadowed dark side) must never tint it. `transparent` is left
+	// on so the overlay stays in the transparent render pass — the same pass
+	// ordering guarantee as the reference — while full opacity keeps the
+	// shadowed regions of the model from bleeding through the line.
 	const baseMat = new THREE.MeshBasicMaterial({
 		color: BASE_COLOR,
 		depthTest: false,
 		transparent: true,
-		opacity: 0.9,
+		opacity: 1.0,
 	});
-	const hoverMat = new THREE.MeshBasicMaterial({ color: HOVER_COLOR, depthTest: false });
+	const hoverMat = new THREE.MeshBasicMaterial({
+		color: HOVER_COLOR,
+		depthTest: false,
+		transparent: true,
+		opacity: 1.0,
+	});
 
 	// One item per mesh: its anchor point in local (Z-up) space decides the
 	// per-frame scale, and `apply` re-poses/rescales the mesh for a given
@@ -180,6 +215,8 @@ export function createGuidesOverlay(): GuidesOverlay {
 		for (const guide of guides) {
 			const entry = buildGuide(guide);
 			for (const { mesh } of entry.items) {
+				mesh.castShadow = false;
+				mesh.receiveShadow = false;
 				mesh.renderOrder = 10;
 				group.add(mesh);
 			}

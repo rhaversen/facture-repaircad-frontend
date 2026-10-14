@@ -6,14 +6,14 @@ import type { IntakeController } from "@/hooks/useIntake";
 /*
   The Annotate photos screen (intake step 2). The intake state itself lives
   in the app orchestrator; this screen only renders the shared
-  PhotoAnnotation surface plus the nav footer and the size-reference
-  requirement note.
+  PhotoAnnotation surface plus the nav footer. Size references are an
+  optional detail, not a gate.
 */
 export default function AnnotatePhotos({
   intake,
   onBack,
   onContinue,
-  onNewRun,
+  onAllRuns,
   onStepClick,
   clickStates,
   reasons,
@@ -21,46 +21,33 @@ export default function AnnotatePhotos({
   intake: IntakeController;
   onBack: () => void;
   onContinue: () => void;
-  onNewRun: () => void;
+  onAllRuns: () => void;
   onStepClick?: (step: number) => void;
   clickStates?: StepClickStates;
   reasons?: StepReasons;
 }) {
   return (
     <Page
-      wide
       currentStep={2}
-      onNewRun={onNewRun}
+      onAllRuns={onAllRuns}
       onStepClick={onStepClick}
       clickStates={clickStates}
       reasons={reasons}
-      title="Annotate your photos"
-      subtitle={
-        <>
-          Mark important parts of the photo and briefly describe what they show
-          or why they matter for the repair.
-        </>
-      }
     >
-      <PhotoAnnotation intake={intake} withSizeReference />
+      <h1 className="mb-3">Annotate your photos</h1>
+      <p className="mb-9 text-[17px] leading-relaxed text-muted">
+        Mark important parts of the photo and briefly describe what they show
+        or why they matter for the repair.
+      </p>
 
-      {intake.photos.length > 0 && !intake.hasMeasurementReference && (
-        <p className="mt-6 -mb-3 text-right text-sm text-[#a05a00]">
-          Mark at least one annotation as a size reference (with its known
-          dimension) to continue.
-        </p>
-      )}
+      <PhotoAnnotation intake={intake} withSizeReference />
 
       <div className="mt-9 flex justify-between gap-4 max-[640px]:flex-col-reverse max-[640px]:[&>button]:w-full">
         <button type="button" className="btn-secondary" onClick={onBack}>
           ← Back
         </button>
 
-        <button
-          type="button"
-          disabled={!intake.hasMeasurementReference}
-          onClick={onContinue}
-        >
+        <button type="button" onClick={onContinue}>
           Review →
         </button>
       </div>

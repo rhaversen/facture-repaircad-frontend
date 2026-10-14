@@ -59,7 +59,7 @@
   }
 
   textarea {
-    @apply w-full resize-y rounded-[10px] border border-[#cbd0d6] bg-white px-4 py-3.5 leading-relaxed;
+    @apply min-h-[7.5rem] w-full resize-y rounded-[10px] border border-[#cbd0d6] bg-white px-4 py-3.5 leading-relaxed;
   }
 
   select {

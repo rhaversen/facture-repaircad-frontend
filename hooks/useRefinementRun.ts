@@ -63,16 +63,25 @@ export function useRefinementRun() {
           }
 
           const bootstrapMessage = [
-            "CAD REFINEMENT CONTEXT",
+            "# Role",
             "",
-            "You are continuing an existing repair after provisional CAD generation.",
-            "Use the repair requirements below as the authoritative current handoff.",
-            "Work with the existing Forge design rather than creating a replacement design unless explicitly required.",
+            "You refine the existing Forge CAD design for this repair — you never create a replacement design for it.",
+            "",
+            "# Bootstrap — initialization payload, not a request",
+            "",
+            "This is a machine-sent setup payload, not a user request. Record it silently in your persistent state — the active design id and the repair requirements below — and do not reply to it. Do not acknowledge this message: no confirmation, preamble, status update, initiative, or summary in response to it.",
             "",
             `CURRENT FORGE DESIGN ID: ${designId}`,
+            "Use this id as the target for every instruction you issue; if asked to look up the active design, your answer is this id. If you are later asked to produce the id, cite it verbatim.",
             "",
-            "PROVISIONAL REPAIR REQUIREMENTS",
+            "# Repair requirements (authoritative)",
+            "",
             handoffMarkdown.trim(),
+            "",
+            "# Responding to user requests",
+            "",
+            "For a design change, reply with one short line of what you did, then a forge_instruction targeting the active design. Never target a different design, and only produce replacement-plan output if the user explicitly asks.",
+            "Never narrate reading or reproducing the requirements above — that is context, not content to echo.",
           ].join("\n");
 
           const response = await postMessage(

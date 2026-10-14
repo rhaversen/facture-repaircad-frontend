@@ -167,16 +167,26 @@ const REASON_NO_GUIDANCE =
   "Repair guidance appears once calibration is finished.";
 
 /** Timeline markers for the CAD sub-states (all on screen 6). */
-const CAD_SUBSTEP_PICKER = 5;
-const CAD_SUBSTEP_CALIBRATION = 6;
-const CAD_SUBSTEP_GUIDANCE = 7;
+export const CAD_SUBSTEP_PICKER = 5;
+export const CAD_SUBSTEP_CALIBRATION = 6;
+export const CAD_SUBSTEP_GUIDANCE = 7;
+/** The conversation occupies marker 4, not screen number 5. */
+export const CONVERSATION_STEP = 4;
 
 /**
  * Pure decision for a timeline-marker click. Every step resolves to
- * navigate (jump to the marker's screen, or to a CAD sub-state when the
- * target marker lives on the visible CAD screen), noop (already there),
- * or locked (not revisable, with a tooltip reason) — so no click can ever
- * land in a state that is not reachable.
+ * navigate (jump to the marker, or to a CAD sub-state when the target
+ * marker lives on screen 6), noop (nothing to change), or locked (not
+ * reachable yet, with a tooltip reason) — no click can ever land in a
+ * state that isn't reachable.
+ *
+ * On-CAD, steps 5/6/7 gate on direction relative to the sub-state shown
+ * (`cadStep`): going back to an already-shown sub-state always works;
+ * going forward requires the state that sub-state was built on — the
+ * picker as-is, calibration a selected design, guidance the final
+ * document. Off-CAD the sub-state is unknown to the caller, so the CAD
+ * markers gate on the handoff plus a selected design for 6/7 — the CAD
+ * view (or its entry check) settles which sub-state to show on landing.
  */
 export function stepNav(state: TimelineNavState, step: number): StepNavAction {
   const {
@@ -190,18 +200,26 @@ export function stepNav(state: TimelineNavState, step: number): StepNavAction {
   } = state;
   const toScreen = timelineStepToScreen(step);
 
-  /*
-   * The CAD workspace renders the timeline's steps 5-7 as sub-states.
-   * Steps 1-4 mean "back to the conversation" (target CHAT_SCREEN);
-   * the 5/6/7 markers open the CAD sub-states — the picker is carried
-   * as target 5, calibration/guidance as the CAD screen itself, so the
-   * CAD view can tell which sub-state to reveal.
-   */
   if (screen === CAD_SCREEN) {
     if (step < CAD_SUBSTEP_PICKER) {
+      /* The conversation marker (4) always goes back to the chat;
+         intake markers (1-3) only re-open before the conversation
+         started — once it exists they have lifted into it. */
+      if (step < CONVERSATION_STEP && conversationReady) {
+        return { kind: "locked", reason: REASON_CONVERSATION };
+      }
       return { kind: "navigate", target: CHAT_SCREEN };
     }
-    if (step === cadStep) return { kind: "noop" };
+
+    /* Markers 5-7 are sub-states of this screen. The picker (5) is
+       always re-openable: from calibration or the guidance view it
+       goes back to it, and when it's already shown jumping to its own
+       marker is a no-op seen above. Calibration (6) and guidance (7)
+       need the state that produced them — a selected design, and for
+       guidance the final document. */
+    if (step === cadStep) {
+      return { kind: "noop" };
+    }
     if (step === CAD_SUBSTEP_PICKER) {
       return { kind: "navigate", target: CAD_SUBSTEP_PICKER };
     }
@@ -214,37 +232,43 @@ export function stepNav(state: TimelineNavState, step: number): StepNavAction {
     return { kind: "navigate", target: CAD_SCREEN };
   }
 
-  /* Already on the marker's screen. */
+  /* Staying on the current screen is always a no-op, even with a
+     pending clarification — the visible step stays live. */
   if (toScreen === screen) return { kind: "noop" };
 
-  /* A pending clarification question locks every step except the
-     conversation itself (that marker already resolved to noop above) —
-     the question has to be answered before moving on. */
-  if (clarificationActive && screen >= CHAT_SCREEN) {
+  /* A pending clarification question has to be answered before any
+     navigation. */
+  if (clarificationActive)
     return { kind: "locked", reason: REASON_CLARIFICATION };
-  }
 
   /* Inside the intake wizard the Continue button owns forward
-     navigation (it guards the size-reference measurement, review, and
-     submission); forward markers stay locked, backward stays free. */
+     navigation; backward markers stay free. */
   if (screen >= INTAKE_MIN && screen <= INTAKE_MAX) {
     if (step > screen) return { kind: "locked", reason: REASON_IN_INTAKE };
     return { kind: "navigate", target: toScreen };
   }
 
-  /* Steps 1-3 lift into the conversation once it started: not
-     revisable. */
-  if (conversationReady && step >= INTAKE_MIN && step <= INTAKE_MAX) {
+  /* Intake steps lift into the conversation once it started: not
+     revisable. The CAD sub-steps (5-7) are unaffected — they still lead
+     into the CAD workspace, where the entry check settles which
+     sub-state to show. */
+  if (conversationReady && step < CAD_SUBSTEP_PICKER)
     return { kind: "locked", reason: REASON_CONVERSATION };
+
+  /* Steps 5-7 share the CAD screen. Opening it settles which sub-state
+     is actually shown (the entry check reopens the picker if no design
+     is persisted, otherwise the calibrated/guided design loads). So from
+     the conversation the whole CAD arm is reachable behind the handoff,
+     but steps 6 and 7 additionally need a selected design — without one
+     the CAD view has nothing to calibrate or write guidance for. */
+  if (step >= CAD_SUBSTEP_PICKER) {
+    if (!handoffReady) return { kind: "locked", reason: REASON_NO_HANDOFF };
+    if (step >= CAD_SUBSTEP_CALIBRATION && !cadSelectionMade)
+      return { kind: "locked", reason: REASON_SELECT_DESIGN };
+    return { kind: "navigate", target: toScreen };
   }
 
-  /* Steps 5-7 need at least one CAD draft before the sub-states can
-     exist. */
-  if (step >= CAD_SUBSTEP_PICKER && !handoffReady) {
-    return { kind: "locked", reason: REASON_NO_HANDOFF };
-  }
-
-  /* Everything left is reachable: the conversation (or CAD). */
+  /* Intake again pre-conversation. */
   return { kind: "navigate", target: toScreen };
 }
 
@@ -259,8 +283,18 @@ export function timelineStepStates(
 ): { states: StepClickStates; reasons: StepReasons } {
   const states: StepClickStates = {};
   const reasons: StepReasons = {};
+  /* Omit the marker highlighted as current: on screens 1-3 the screen
+     number is the marker; the conversation renders as step 4 (marker 5 is
+     already the first CAD sub-state); on the CAD screen it is the sub-step
+     currently visible (5-7). */
+  const currentStep =
+    visibleScreen === CAD_SCREEN
+      ? state.cadStep
+      : visibleScreen === CHAT_SCREEN
+        ? CONVERSATION_STEP
+        : visibleScreen;
   for (let step = 1; step <= RUN_LIST; step++) {
-    if (step === visibleScreen) continue;
+    if (step === currentStep) continue;
     const action = stepNav(state, step);
     if (action.kind === "locked") {
       states[step] = "disabled";

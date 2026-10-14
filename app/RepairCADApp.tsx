@@ -23,6 +23,9 @@ import {
   RUN_LIST,
   CHAT_SCREEN,
   CAD_SCREEN,
+  CAD_SUBSTEP_PICKER,
+  CAD_SUBSTEP_CALIBRATION,
+  CAD_SUBSTEP_GUIDANCE,
   type TimelineNavState,
 } from "@/lib/runProgress";
 import { collectHandoffs } from "@/lib/handoffs";
@@ -75,6 +78,7 @@ export default function RepairCADApp() {
     listRuns,
     createRun,
     selectRun,
+    clearRun,
     reconcileRun,
   } = repairRun;
 
@@ -86,7 +90,7 @@ export default function RepairCADApp() {
 
   /*
     Run provenance for auto-generate: a run created in this browser session
-    (bootstrap of an empty workspace, the New-run button, or reaching the
+    (bootstrap of an empty workspace, the New-repair button, or reaching the
     chat normally) may auto-generate its CAD models when its handoff lands —
     the user is watching the run live, so no extra Generate click is needed.
     Runs opened from the runs list are never registered, keeping the manual
@@ -122,6 +126,27 @@ export default function RepairCADApp() {
 
   const [handoffDismissed, setHandoffDismissed] = useState(false);
 
+  // The CAD sub-state reported by CadModelView (its useForge designId
+  // and final guidance). While the conversation screen is up, the shell
+  // owns markers 5/6/7 — 5 is gated by handoffReady, and 6/7 mirror this
+  // real selection state instead of a placeholder.
+  const [cadSelectionMade, setCadSelectionMade] = useState(false);
+  const [hasFinalGuidance, setHasFinalGuidance] = useState(false);
+  function handleCadStateChange(state: {
+    cadSelectionMade: boolean;
+    hasFinalGuidance: boolean;
+  }) {
+    setCadSelectionMade(state.cadSelectionMade);
+    setHasFinalGuidance(state.hasFinalGuidance);
+  }
+  const activeRunId = runId ?? run?._id ?? null;
+  /* A run switch starts fresh design state — the previous run's CAD
+     selection must not enable markers 6/7 for the new run. */
+  useEffect(() => {
+    setCadSelectionMade(false);
+    setHasFinalGuidance(false);
+  }, [activeRunId]);
+
   const screen = deriveScreen({
     run,
     messages,
@@ -156,10 +181,12 @@ export default function RepairCADApp() {
     clarificationActive: waitingForCaseClarification,
     /* The app shell only renders the timeline while screens 1-5 are up
        (screen 6 renders its own) — CadModelView fills the CAD sub-state
-       fields from Forge itself, so placeholders are safe here. */
+       fields from Forge itself there. cadSelectionMade/hasFinalGuidance
+       are the real values reported up from CadModelView so the markers
+       stay accurate from the conversation too. */
     cadStep: CAD_SCREEN,
-    cadSelectionMade: false,
-    hasFinalGuidance: false,
+    cadSelectionMade,
+    hasFinalGuidance,
   };
   const { states: stepStates, reasons: stepReasons } = timelineStepStates(
     timelineState,
@@ -263,6 +290,13 @@ export default function RepairCADApp() {
   }, []);
 
   // ── Handlers ────────────────────────────────────────────────────────────
+
+  function handleToAllRuns() {
+    /* Drop the active run and request the list; the list reloads itself
+       whenever the derived screen lands there. */
+    clearRun();
+    setScreen(RUN_LIST);
+  }
 
   async function handleCreateRun() {
     try {
@@ -370,8 +404,8 @@ export default function RepairCADApp() {
     return null;
   }
 
-  const activeRunId = runId ?? run?._id ?? null;
   const shouldAutoGenerate = activeRunId !== null && liveRunIds.has(activeRunId);
+
 
   if (screen === RUN_LIST) {
     return (
@@ -383,6 +417,7 @@ export default function RepairCADApp() {
         createError={createError}
         selecting={selectingRun}
         selectError={selectError}
+        s2NodeId={s2NodeIdValue}
         onCreateRun={handleCreateRun}
         onSelectRun={handleSelectRun}
         onLogout={handleLogout}
@@ -405,7 +440,7 @@ export default function RepairCADApp() {
           intake.openAnnotationScreen();
           setScreen(2);
         }}
-        onNewRun={handleCreateRun}
+        onAllRuns={handleToAllRuns}
       />
     );
   }
@@ -416,7 +451,7 @@ export default function RepairCADApp() {
         intake={intake}
         onBack={() => setScreen(1)}
         onContinue={() => setScreen(3)}
-        onNewRun={handleCreateRun}
+        onAllRuns={handleToAllRuns}
         onStepClick={handleTimelineStep}
         clickStates={stepStates}
         reasons={stepReasons}
@@ -431,7 +466,7 @@ export default function RepairCADApp() {
         photos={intake.photos}
         annotations={intake.annotations}
         onBack={() => setScreen(2)}
-        onNewRun={handleCreateRun}
+        onAllRuns={handleToAllRuns}
         onStepClick={handleTimelineStep}
         clickStates={stepStates}
         reasons={stepReasons}
@@ -450,7 +485,7 @@ export default function RepairCADApp() {
         waitingForCaseClarification={waitingForCaseClarification}
         clarificationSubmitting={clarificationSubmitting}
         clarificationError={clarificationError}
-        onNewRun={handleCreateRun}
+        onAllRuns={handleToAllRuns}
         onStepClick={handleTimelineStep}
         clickStates={stepStates}
         reasons={stepReasons}
@@ -465,8 +500,9 @@ export default function RepairCADApp() {
         handoffs={handoffs}
         runId={activeRunId}
         shouldAutoGenerate={shouldAutoGenerate}
-        onNewRun={handleCreateRun}
+        onAllRuns={handleToAllRuns}
         onBackToChat={handleBackToChat}
+        onCadStateChange={handleCadStateChange}
       />
     );
   }

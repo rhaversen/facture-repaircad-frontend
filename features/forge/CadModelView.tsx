@@ -4,8 +4,7 @@ import ReactMarkdown from "react-markdown";
 import { Stage } from "@react-three/drei";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import RepairProgress from "@/components/RepairProgress";
-import { AppShell, Card } from "@/components/AppShell";
+import Page from "@/components/Page";
 import { FlowChatFrame } from "@/features/chat/FlowChatEmbed";
 import { useRefinementRun } from "@/hooks/useRefinementRun";
 import { useForge } from "@/hooks/useForge";
@@ -23,8 +22,10 @@ import {
   CadCanvas,
   DesignPicker,
   Model,
+  type GuideFrameRequest,
 } from "./viewport";
 import CalibrationPanel from "./CalibrationPanel";
+import { guideFrameBox } from "./guides";
 
 interface CadModelViewProps {
   handoffs: string[];
@@ -37,9 +38,16 @@ interface CadModelViewProps {
     three designs per opened run).
   */
   shouldAutoGenerate?: boolean;
-  onNewRun: () => void;
+  onAllRuns: () => void;
   /** Back to the conversation (repair planning) from the CAD timeline. */
   onBackToChat?: () => void;
+  /** Reports the design-selection state to the app shell so its
+      timeline markers 6/7 enable from the conversation once a design
+      is selected (and 7 with the final guidance). */
+  onCadStateChange?: (state: {
+    cadSelectionMade: boolean;
+    hasFinalGuidance: boolean;
+  }) => void;
 }
 
 /*
@@ -54,8 +62,9 @@ export default function CadModelView({
   handoffs,
   runId,
   shouldAutoGenerate = false,
-  onNewRun,
+  onAllRuns,
   onBackToChat,
+  onCadStateChange,
 }: CadModelViewProps) {
   const forge = useForge();
   const {
@@ -177,6 +186,29 @@ export default function CadModelView({
     (name: string) => name === activeGuideParam,
     [activeGuideParam],
   );
+
+  /*
+    Guide camera reframe (Option B): the orbit pivot moves to the world
+    origin and the camera backs up along the origin -> guide axis until
+    the guide fits, so the model stays centred and the user looks from
+    the guide's side straight through it. Computed only when the panel's
+    "show guide" button is clicked — row hover/click stays selection-only
+    — and one nonce per click lets repeat clicks re-run the frame.
+  */
+  const [guideFrame, setGuideFrame] = useState<GuideFrameRequest | null>(null);
+  const showGuideCamera = useCallback(
+    (paramName: string) => {
+      const guide = guides.find((g) => g.param === paramName);
+      if (!guide) return;
+      const frame = guideFrameBox(guide);
+      setGuideFrame((prev) => ({
+        center: [frame.center.x, frame.center.y, frame.center.z],
+        radius: frame.radius,
+        nonce: (prev?.nonce ?? 0) + 1,
+      }));
+    },
+    [guides],
+  );
   // Guides are keyed by parameter name for the panel's per-row disc and
   // the viewport's matching.
   const guidesByParam = useMemo(() => {
@@ -189,25 +221,17 @@ export default function CadModelView({
     return map;
   }, [guides]);
 
-  // A design switch invalidates the active guide selection.
+  // A design switch invalidates the active guide selection and any pending
+  // guide reframe (the guide endpoints changed with the geometry).
   const [prevDesignId, setPrevDesignId] = useState(designId);
   if (prevDesignId !== designId) {
     setPrevDesignId(designId);
     setActiveGuideParam(null);
+    setGuideFrame(null);
   }
 
   function handleConfirmParam(paramName: string, value: number) {
     confirmParamValue(paramName, value);
-  }
-
-  function handleRegenerate() {
-    if (busy) return;
-    const ok = window.confirm(
-      "Regenerate the model from scratch?\n\nAny measurements you have already entered will be reset and the current design will be discarded. This cannot be undone.",
-    );
-    if (!ok) return;
-    reset();
-    generate({ handoffs, runId });
   }
 
   const finalGuidance = refinementRunningDoc?.final_guidance?.trim() ?? "";
@@ -218,6 +242,18 @@ export default function CadModelView({
     6 while refining/calibrating, 7 once the repair guidance has landed.
   */
   const currentCADStep = cadStepFor(phase, finalGuidance !== "");
+
+  /* The app shell renders timeline markers 6/7 while the conversation
+     screen is up, where this view's own CAD sub-state fields don't
+     apply — report the real selection state to it instead. */
+  const onCadStateChangeRef = useRef(onCadStateChange);
+  onCadStateChangeRef.current = onCadStateChange;
+  useEffect(() => {
+    onCadStateChangeRef.current?.({
+      cadSelectionMade: designId !== null,
+      hasFinalGuidance: finalGuidance !== "",
+    });
+  }, [designId, finalGuidance]);
 
   function handleDownloadFinalGuidance() {
     if (!finalGuidance) return;
@@ -314,26 +350,15 @@ export default function CadModelView({
   }
 
   return (
-    <AppShell fill>
-      <Card fill className="!max-w-[1500px]">
-        <div className="relative mb-6 shrink-0">
-          <button
-            type="button"
-            title="Start a new run"
-            className="btn-utility absolute -top-2 right-0"
-            onClick={onNewRun}
-          >
-            ＋ New run
-          </button>
-          <RepairProgress
-            currentStep={currentCADStep}
-            onStepClick={handleTimelineStep}
-            clickStates={stepStates}
-            reasons={stepReasons}
-          />
-        </div>
-
-        {entryChecking ? (
+    <Page
+      currentStep={currentCADStep}
+      bleed={phase === "choosing"}
+      onAllRuns={onAllRuns}
+      onStepClick={handleTimelineStep}
+      clickStates={stepStates}
+      reasons={stepReasons}
+    >
+      {entryChecking ? (
           <div className="flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
             <div className="flex flex-col items-center justify-center p-6 text-center text-ink-soft">
               <div className="cad-spinner" />
@@ -341,18 +366,15 @@ export default function CadModelView({
             </div>
           </div>
         ) : entryMissing ? (
-          <div className="relative flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
-            <div className="max-w-[420px] p-6 text-center text-ink-soft">
-              <strong>No model has been generated for this repair yet.</strong>
-              <p className="mt-2.5 text-[13px] text-[#8a93a1]">
-                Start a new generation from your repair handoff document.
-              </p>
+          <div className="flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden">
+            <div className="flex max-w-[520px] flex-col items-center px-6 text-center text-ink-soft">
+              <strong>Your repair design is ready for generation.</strong>
               <button
                 type="button"
                 className="mt-4.5 bg-brand px-5 py-3 font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] hover:bg-brand-dark"
                 onClick={() => generate({ handoffs, runId })}
               >
-                Generate model
+                Continue
               </button>
             </div>
           </div>
@@ -374,20 +396,26 @@ export default function CadModelView({
             </div>
           </div>
         ) : phase === "choosing" ? (
-          <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            <div className="min-h-0 flex-1 overflow-y-auto pb-24">
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {/*
+              Bleed mode: Page's <main> doesn't scroll, the tile region
+              here does. The bar below is a regular pinned flex row —
+              the bar sits flush against the bottom edge just like
+              the top row with the pinned progress.
+            */}
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pb-6 max-[640px]:px-5">
               <div className="shrink-0">
-                <h1 className="text-[30px]">Choose a rough shape for the design</h1>
-                <p className="mb-4 mt-0 text-[17px] leading-relaxed text-muted">
-                  Several candidates were generated from your repair handoff.
-                  Select the one you want — the other candidates are kept while
-                  you decide. This step is only about getting the right{" "}
-                  <strong>shape</strong> — the next step will ask you for
-                  accurate measurements, so no need to judge the exact
-                  dimensions here.
-                </p>
+                <h1 className="pt-6 text-[30px]">Choose a rough shape for the design</h1>
+                <p className="mb-4 text-[17px] leading-relaxed text-muted">
+                    Several candidates were generated from your repair handoff.
+                    Select the one you want — the other candidates are kept while
+                    you decide. This step is only about getting the right{" "}
+                    <strong>shape</strong> — the next step will ask you for
+                    accurate measurements, so no need to judge the exact
+                    dimensions here.
+                  </p>
               </div>
-              <div className="min-w-0">
+              <div className="mb-4">
                 <DesignPicker
                   key={pickerKey}
                   variants={variants}
@@ -396,13 +424,7 @@ export default function CadModelView({
                 />
               </div>
             </div>
-
-            {/*
-              Pinned to the bottom edge of the card (absolute, not part of
-              the scroll flow) so the commit button is always reachable
-              without scrolling to the tiles.
-            */}
-            <div className="absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-between gap-3 rounded-b-xl border border-line-soft bg-surface px-5 py-3.5 shadow-[0_-6px_16px_rgba(16,24,40,0.06)]">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-line bg-white px-6 py-4 max-[640px]:px-5">
               <span className="text-[14px] text-muted">
                 {pickerSelectedId !== null
                   ? `Design ${variants.findIndex((v) => v.designId === pickerSelectedId) + 1} is selected. Pick another tile to switch.`
@@ -427,14 +449,16 @@ export default function CadModelView({
             </div>
           </section>
         ) : phase === "calibrating" ? (
-          <div className="flex min-h-[600px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
+          <div className="flex min-h-[600px] flex-1 flex-col gap-6 pt-6 lg:flex-row lg:items-stretch">
             <ViewportFrame
+              className="min-w-0 flex-1"
               model={model}
               generating={isLoading}
               fitKey={designId}
               designId={designId}
               guides={guides}
               guideVisible={guideVisible}
+              guideFrame={guideFrame}
               spinnerLabel={spinnerLabel}
               dimmed={modelPending}
             />
@@ -448,6 +472,7 @@ export default function CadModelView({
               </pre>
             ) : null}
             <CalibrationPanel
+              className="w-full lg:min-w-0 lg:flex-1"
               parameters={parameters}
               confirmedValues={confirmedValues}
               settingParam={settingParam ?? (busy ? "busy" : null)}
@@ -455,6 +480,7 @@ export default function CadModelView({
               onFinish={() => finishCalibration({ runId })}
               activeParam={activeGuideParam}
               onSelectGuides={setActiveGuideParam}
+              onShowGuideCamera={showGuideCamera}
               guidesAvailable={(name) => guidesByParam.has(name)}
             />
 
@@ -535,11 +561,6 @@ export default function CadModelView({
             </div>
 
             {finalGuidance ? (
-              /*
-                Capped with an internal scroll so a long document can never
-                push the card past the viewport or clip below the regenerate
-                footer.
-              */
               <div className="markdown-body max-h-[40vh] overflow-y-auto overscroll-contain rounded-[10px] border border-line bg-white p-5 leading-[1.65]">
                 <ReactMarkdown>{finalGuidance}</ReactMarkdown>
               </div>
@@ -551,19 +572,7 @@ export default function CadModelView({
           </section>
         )}
 
-        {phase !== "error" && phase !== "choosing" && (
-          <div className="mt-8 flex shrink-0 justify-center border-t border-line-soft pt-5">
-            <button
-              type="button"
-              className="rounded-lg border border-[#d5d9e0] bg-transparent px-3.5 py-1.5 text-sm text-muted hover:border-[#c0392b] hover:bg-transparent hover:text-[#c0392b]"
-              onClick={handleRegenerate}
-            >
-              ↻ Regenerate model
-            </button>
-          </div>
-        )}
-      </Card>
-    </AppShell>
+    </Page>
   );
 }
 
@@ -581,8 +590,10 @@ function ViewportFrame({
   designId,
   guides,
   guideVisible,
+  guideFrame = null,
   spinnerLabel,
   dimmed,
+  className,
 }: {
   model: GlbModel | null;
   generating: boolean;
@@ -590,11 +601,16 @@ function ViewportFrame({
   designId: string | null;
   guides: Guide[];
   guideVisible: (name: string) => boolean;
+  /** Only the calibrating row wires this — the guide reframe. */
+  guideFrame?: GuideFrameRequest | null;
   spinnerLabel: string;
   dimmed: boolean;
+  /** Extra sizing classes for the frame (e.g. the 1/3 column share on
+   *  wide screens). */
+  className?: string;
 }) {
   return (
-    <div className="relative flex min-h-[420px] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white max-lg:h-[560px]">
+    <div className={`relative flex min-h-[420px] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white max-lg:h-[560px] ${className ?? ""}`}>
       {model !== null ? (
         <CadCanvas
           generating={generating}
@@ -603,6 +619,7 @@ function ViewportFrame({
           designId={designId ?? undefined}
           guides={guides}
           guideVisible={guideVisible}
+          guideFrame={guideFrame}
         >
           <Stage adjustCamera={false} center={{ disable: true }}>
             <Model model={model} />
@@ -640,12 +657,12 @@ function RefinementChat({
 }) {
   /*
     Sits as a third column next to the canvas and the parameter panel on wide
-    screens, recording to the row's height; the calibration panel fixes the
-    columns' width. When stacked (narrow screens) the aside keeps a fixed
-    share of the viewport so the iframe still has a definite height.
+    screens, stretched to the row's height; all three columns share the row
+    equally (basis-0 flex-1). When stacked (narrow screens) the aside keeps a
+    fixed share of the viewport so the iframe still has a definite height.
   */
   return (
-    <aside className="flex h-[75dvh] min-h-[420px] min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-white lg:h-auto lg:w-[380px] lg:min-h-[420px] lg:shrink-0 lg:self-stretch">
+    <aside className="flex h-[75dvh] min-h-[420px] min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-white lg:h-auto lg:min-h-[420px] lg:flex-1 lg:self-stretch">
       <div className="shrink-0 border-b border-line-soft px-5 py-4.5">
         <h2 className="mb-1.5 text-lg">Refine your repair</h2>
         <p className="m-0 text-sm leading-[1.45] text-muted-2">{intro}</p>

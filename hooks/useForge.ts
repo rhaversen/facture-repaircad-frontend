@@ -20,6 +20,7 @@ import { recoverDesignIdForRun } from "@/lib/recoverDesign";
 import type {
   ForgePhase,
   GlbModel,
+  GeometrySummary,
   Guide,
   Parameter,
 } from "@/lib/types";
@@ -176,6 +177,59 @@ export function useForge() {
       return parseGlbCached(cached, new ArrayBuffer(0), targetDesignId);
     },
     [fetchGeometry],
+  );
+
+  /**
+    Adopt the mesh a `geometry` stream frame points at. The frame is only an
+    alarm — the GLB itself comes from REST (deduped and 304-safe through the
+    same fetch wrapper), so calling it per frame stays cheap: an unchanged
+    revision round-trips as a status line and hands back the cached parse.
+    Resolves the parsed model, null when none exists, or null on a transport
+    failure (logged, never thrown — one bad fetch shouldn't kill the turn).
+  */
+  const applyGeometry = useCallback(
+    async (
+      summary: GeometrySummary,
+      targetDesignId: string,
+    ): Promise<GlbModel | null> => {
+      try {
+        const summaryGuides = summary.guides ?? [];
+        const fetch = await fetchGeometry(
+          targetDesignId,
+          revisionRef.current ?? undefined,
+        );
+        if (fetch.status === "ok") {
+          const parsed = await parseGlbCached(
+            fetch.revision,
+            fetch.blob,
+            targetDesignId,
+          );
+          setModel(parsed);
+          setGuides(summaryGuides);
+          revisionRef.current = fetch.revision;
+          return parsed;
+        }
+        if (fetch.status === "none") {
+          setModel(null);
+          setGuides([]);
+          revisionRef.current = null;
+          return null;
+        }
+        // "unchanged" — same revision the viewport already shows; a null
+        // cache (nothing decoded yet) is nothing to re-park.
+        return revisionRef.current === null
+          ? null
+          : await parseGlbCached(
+              revisionRef.current,
+              new ArrayBuffer(0),
+              targetDesignId,
+            );
+      } catch (err) {
+        console.warn("[Forge] live geometry apply failed:", err);
+        return null;
+      }
+    },
+    [fetchGeometry, setGuides, setModel],
   );
 
 
@@ -360,7 +414,8 @@ export function useForge() {
           let variantId: string | null = null;
           try {
             variantId = await createDesign();
-            noteVariant(variantId);
+            const tileId = variantId;
+            noteVariant(tileId);
             activeVariantIdsRef.current.add(variantId);
             setVariants((prev) => [
               ...prev,
@@ -378,6 +433,21 @@ export function useForge() {
               if (done || ev.type === "end") break;
               if (ev.type === "error") {
                 throw new Error(ev.data || "Forge error during initial generation");
+              } else if (ev.type === "geometry") {
+                // A build just landed; pull it into the tile live so the
+                // picker tracks the agent's current draft. Scoped fetch:
+                // no global model write (the main viewport belongs to the
+                // final load below), dedup collapses repeat frames.
+                void loadGeometry(tileId, { apply: false, signal }).then(
+                  (parsed) => {
+                    if (parsed !== null) {
+                      patchVariant(tileId, {
+                        mesh: parsed,
+                        status: "ready",
+                      });
+                    }
+                  },
+                );
               }
             }
 
@@ -674,6 +744,21 @@ export function useForge() {
                 const { value: ev, done } = await stream.next();
                 if (done || ev.type === "end" || ev.type === "error") break;
                 if (ev.type === "running" && ev.data === false) break;
+                // Live alarms fill the tile as each revision lands; the final
+                // `loadGeometry` below is the authoritative fill. Scoped fetch
+                // so we don't clobber the main viewport's model.
+                if (ev.type === "geometry") {
+                  const parsed = await loadGeometry(variantDesignId, {
+                    apply: false,
+                    signal,
+                  });
+                  if (parsed !== null) {
+                    patchVariant(variantDesignId, {
+                      mesh: parsed,
+                      status: "ready",
+                    });
+                  }
+                }
               }
               if (signal.aborted) return;
               variantMesh = await loadGeometry(variantDesignId, { apply: false, signal });
@@ -983,11 +1068,16 @@ export function useForge() {
           const stream = subscribeDesignStream(targetDesignId, signal);
           if (signal.aborted) return false;
           // Wait only while a turn is actually live. A completed generation
-          // replays `running: false` and then goes quiet.
+          // replays `running: false` and then goes quiet. Mid-turn geometry
+          // alarms adopt the revised mesh in place so the restore lands on
+          // the agent's latest build, not the first streamed one.
           for (;;) {
             const { value: ev, done } = await stream.next();
             if (done || ev.type === "end" || ev.type === "error") break;
             if (ev.type === "running" && ev.data === false) break;
+            if (ev.type === "geometry") {
+              void applyGeometry(ev.data, targetDesignId);
+            }
           }
           if (signal.aborted) return false;
         }
@@ -1024,7 +1114,7 @@ export function useForge() {
         releaseBusy(lock);
       }
     },
-    [runCalibration, rehydrateVariants, acquireBusy, releaseBusy],
+    [runCalibration, rehydrateVariants, acquireBusy, releaseBusy, applyGeometry],
   );
 
   /*
@@ -1068,26 +1158,41 @@ export function useForge() {
         const copyId = await duplicateDesign(source);
         await sendDesignMessage(copyId, feedback.trim());
 
-        // Follow the copy's turn without parking: a running → running-false
-        // turn boundary means the feedback has been applied and the replies
-        // are streamed out.
+        // Follow the copy's turn to its end; the stream replays the turn, so
+        // multiple turns fire many running/running-false pairs — leaving on
+        // the first boundary used to freeze the load on the first streamed
+        // GLB. Each mid-turn geometry alarm adopts the revised mesh in
+        // place, mirroring the Forge frontend's applyStreamEvent. Applied
+        // outside the read loop so a slow fetch can't starve later frames;
+        // concurrent alarms collapse through the deduped fetch.
         const stream = subscribeDesignStream(copyId, signal);
-        let turnStarted = false;
+        let seenLiveTurn = false;
         for (;;) {
           const { value: ev, done } = await stream.next();
           if (done || ev.type === "end") break;
           if (ev.type === "running") {
-            if (ev.data === true) turnStarted = true;
-            else if (turnStarted) break;
+            if (ev.data === true) seenLiveTurn = true;
+          } else if (ev.type === "geometry") {
+            void applyGeometry(ev.data, copyId);
           } else if (ev.type === "error") {
             throw new Error(ev.data || "Forge error during refinement");
           }
         }
         if (signal.aborted) return;
 
+        // A boom that interrupted a live turn (`end` after running without
+        // error: a context overflow, or the stop control mid-turn) means
+        // the post-turn REST load below can hit a half-applied build; the
+        // final `loadGeometry` decides. A replay-only turn with no live
+        // activity can end cleanly when the design simply has no geometry
+        // (e.g. a failed-build duplicate), so surface that as a real error
+        // too.
         const loaded = await loadGeometry(copyId);
         if (signal.aborted) return;
         if (loaded === null) {
+          if (seenLiveTurn) {
+            throw new Error("Forge refinement failed; the design has no build.");
+          }
           throw new Error("Forge did not return a renderable model.");
         }
         setVariants([]);
@@ -1131,7 +1236,7 @@ export function useForge() {
         releaseBusy(lock);
       }
     },
-    [designId, runCalibration, acquireBusy, releaseBusy],
+    [designId, runCalibration, acquireBusy, releaseBusy, applyGeometry],
   );
 
   // ── Reset to idle (abort, stop, clear all shared state) ──────────

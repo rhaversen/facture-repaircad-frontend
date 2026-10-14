@@ -11,7 +11,7 @@ import { useRefinementRun } from "@/hooks/useRefinementRun";
 import { useForge } from "@/hooks/useForge";
 import { useDesignExists } from "@/hooks/useDesignExists";
 import { downloadBlob, exportScene } from "@/lib/exportModel";
-import type { Guide } from "@/lib/types";
+import type { GlbModel, Guide } from "@/lib/types";
 import {
   CAD_SCREEN,
   cadStepFor,
@@ -428,36 +428,16 @@ export default function CadModelView({
           </section>
         ) : phase === "calibrating" ? (
           <div className="flex min-h-[600px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
-            <div className="relative flex min-h-[420px] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white max-lg:h-[560px]">
-              {model !== null ? (
-                <CadCanvas
-                  generating={isLoading}
-                  fitKey={designId}
-                  fitModel={model}
-                  designId={designId ?? undefined}
-                  guides={guides}
-                  guideVisible={guideVisible}
-                >
-                  <Stage adjustCamera={false} center={{ disable: true }}>
-                    <Model model={model} />
-                  </Stage>
-                </CadCanvas>
-              ) : null}
-
-              {isLoading && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 p-6 text-center text-ink-soft">
-                  <div className="cad-spinner" />
-                  <p>{spinnerLabel}</p>
-                  <p className="mt-1.5 text-[13px] text-[#8a93a1]">This can take a minute while Forge works.</p>
-                </div>
-              )}
-
-              {modelPending && (
-                <div className="pointer-events-none absolute inset-0 bg-white/60" title="Applying the change…">
-                  <p className="sr-only">Applying the change…</p>
-                </div>
-              )}
-            </div>
+            <ViewportFrame
+              model={model}
+              generating={isLoading}
+              fitKey={designId}
+              designId={designId}
+              guides={guides}
+              guideVisible={guideVisible}
+              spinnerLabel={spinnerLabel}
+              dimmed={modelPending}
+            />
 
             {statusMessage !== "" ? (
               <p className="shrink-0 text-[12px] leading-snug text-red-600">{statusMessage}</p>
@@ -497,36 +477,16 @@ export default function CadModelView({
                 </p>
               </div>
 
-              <div className="relative flex min-h-[420px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white max-lg:h-[560px]">
-                {model !== null ? (
-                  <CadCanvas
-                    generating={isLoading}
-                    fitKey={designId}
-                    fitModel={model}
-                    designId={designId ?? undefined}
-                    guides={guides}
-                    guideVisible={guideVisible}
-                  >
-                    <Stage adjustCamera={false} center={{ disable: true }}>
-                      <Model model={model} />
-                    </Stage>
-                  </CadCanvas>
-                ) : null}
-
-                {isLoading && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 p-6 text-center text-ink-soft">
-                    <div className="cad-spinner" />
-                    <p>{spinnerLabel}</p>
-                    <p className="mt-1.5 text-[13px] text-[#8a93a1]">This can take a minute while Forge works.</p>
-                  </div>
-                )}
-
-                {modelPending && (
-                  <div className="pointer-events-none absolute inset-0 bg-white/60" title="Applying the change…">
-                    <p className="sr-only">Applying the change…</p>
-                  </div>
-                )}
-              </div>
+              <ViewportFrame
+                model={model}
+                generating={isLoading}
+                fitKey={designId}
+                designId={designId}
+                guides={guides}
+                guideVisible={guideVisible}
+                spinnerLabel={spinnerLabel}
+                dimmed={modelPending}
+              />
 
               {phase === "ready" && (
                 <div className="mt-6 flex shrink-0 gap-3">
@@ -604,6 +564,66 @@ export default function CadModelView({
         )}
       </Card>
     </AppShell>
+  );
+}
+
+/*
+  Shared 3D stage: one <Canvas> instance hosts every phase that shows a
+  model, so the camera keeps its orientation while a design moves through
+  the phases. The two overlays are shared with the ready view: a spinner
+  while Forge is generating (white veil so the old model stays visible)
+  and a dim veil while a parameter change is being applied.
+*/
+function ViewportFrame({
+  model,
+  generating,
+  fitKey,
+  designId,
+  guides,
+  guideVisible,
+  spinnerLabel,
+  dimmed,
+}: {
+  model: GlbModel | null;
+  generating: boolean;
+  fitKey: string | null;
+  designId: string | null;
+  guides: Guide[];
+  guideVisible: (name: string) => boolean;
+  spinnerLabel: string;
+  dimmed: boolean;
+}) {
+  return (
+    <div className="relative flex min-h-[420px] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white max-lg:h-[560px]">
+      {model !== null ? (
+        <CadCanvas
+          generating={generating}
+          fitKey={fitKey}
+          fitModel={model}
+          designId={designId ?? undefined}
+          guides={guides}
+          guideVisible={guideVisible}
+        >
+          <Stage adjustCamera={false} center={{ disable: true }}>
+            <Model model={model} />
+          </Stage>
+        </CadCanvas>
+      ) : null}
+
+      {generating && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 p-6 text-center text-ink-soft">
+          <div className="cad-spinner" />
+          <p>{spinnerLabel}</p>
+          <p className="mt-1.5 text-[13px] text-[#8a93a1]">This can take a minute while Forge works.</p>
+        </div>
+      )}
+
+      {dimmed && (
+        <div className="pointer-events-none absolute inset-0 bg-white/60" title="Applying the change…">
+          <p className="sr-only">Applying the change…</p>
+        </div>
+      )}
+    </div>
   );
 }
 

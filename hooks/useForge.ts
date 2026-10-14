@@ -24,99 +24,15 @@ import type {
   Parameter,
 } from "@/lib/types";
 
-/*
-  Run → design persistence. Each run entry is just the current selection:
-  the design the user settled on, which phase of the CAD workspace it is in,
-  and the variant ids that were generated for the run — the candidates also
-  stay recorded after a pick so the picker can be reopened any time with the
-  original set. A finished (or in-progress) calibration can be rehydrated
-  from the persisted Forge design — GET /designs/:id/mesh re-renders the
-  stored model, and confirmed parameter values are PATCHed to Forge the
-  moment each one is confirmed (not batched at finish) — so a page refresh
-  or run re-entry never pays for a new LLM generation and never loses a
-  confirmed measurement. A "choosing" entry stores the variant ids, so a
-  refresh while the picker is open re-renders them (no LLM call) and
-  reopens the picker. Entries survive navigation and refresh in the same
-  browser; anything that fails to rehydrate (deleted design, other user's
-  token) is dropped and the flow falls back to full generation.
-*/
-const DESIGN_STORE_KEY = "repaircad.forgeDesigns";
+import {
+  loadStoredDesignState,
+  storeDesignState,
+  clearStoredDesignState,
+} from "@/lib/forgeStore";
 
-interface StoredDesignState {
-  designId?: string;
-  phase: string;
-  variantDesignIds?: string[];
-}
-
-function readDesignStore(): Record<string, StoredDesignState> {
-  try {
-    const raw = window.localStorage.getItem(DESIGN_STORE_KEY);
-    if (raw === null) return {};
-    const parsed = JSON.parse(raw);
-    return parsed !== null && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function writeDesignStore(store: Record<string, StoredDesignState>) {
-  try {
-    window.localStorage.setItem(DESIGN_STORE_KEY, JSON.stringify(store));
-  } catch {
-    // Quota/private-mode failures only cost rehydration, never correctness.
-  }
-}
-
-export function loadStoredDesignState(runId: string | null): StoredDesignState | null {
-  if (!runId) return null;
-  const entry = readDesignStore()[runId];
-  if (entry === undefined || typeof entry.phase !== "string") {
-    return null;
-  }
-  if (typeof entry.designId !== "undefined" && typeof entry.designId !== "string") {
-    return null;
-  }
-  if (
-    entry.variantDesignIds !== undefined &&
-    (!Array.isArray(entry.variantDesignIds) ||
-      !entry.variantDesignIds.every((id) => typeof id === "string"))
-  ) {
-    return null;
-  }
-  if (entry.phase === "choosing") {
-    if (
-      !Array.isArray(entry.variantDesignIds) ||
-      entry.variantDesignIds.length === 0
-    ) {
-      return null;
-    }
-    return entry;
-  }
-  if (typeof entry.designId !== "string") {
-    return null;
-  }
-  return entry;
-}
-
-function storeDesignState(runId: string | null, entry: StoredDesignState) {
-  if (!runId) return;
-  const store = readDesignStore();
-  // Variant ids are written once the candidates are known and kept forever
-  // after a pick — they are what lets the picker be reopened with the run's
-  // original candidates, so later phase writes must not drop them.
-  if (entry.variantDesignIds === undefined && store[runId]?.variantDesignIds) {
-    entry = { ...entry, variantDesignIds: store[runId].variantDesignIds };
-  }
-  store[runId] = entry;
-  writeDesignStore(store);
-}
-
-export function clearStoredDesignState(runId: string | null) {
-  if (!runId) return;
-  const store = readDesignStore();
-  delete store[runId];
-  writeDesignStore(store);
-}
+/* Re-exported (not just imported) because external readers — not only
+   useForge — need them. */
+export { loadStoredDesignState, clearStoredDesignState };
 
 /*
   Shared Forge state machine used by the CAD screen:
@@ -131,6 +47,7 @@ export function clearStoredDesignState(runId: string | null) {
   share a single busy lock, an AbortController tree, and the store.
 */
 export function useForge() {
+  // ── Viewport state ───────────────────────────────────────────────
   const [phase, setPhase] = useState<ForgePhase>("idle");
   const [model, setModel] = useState<GlbModel | null>(null);
   const [guides, setGuides] = useState<Guide[]>([]);
@@ -170,6 +87,7 @@ export function useForge() {
     [],
   );
 
+  // ── Variant tile state ───────────────────────────────────────────
   const patchVariant = useCallback(
     (variantId: string, patch: Partial<{ mesh: GlbModel | null; status: "generating" | "ready"; error: string | null }>) => {
       setVariants((prev) =>
@@ -186,6 +104,7 @@ export function useForge() {
   // subsequent geometry fetches can 304 against it.
   const revisionRef = useRef<string | null>(null);
 
+  // ── Geometry loading (revision-aware, deduped across callers) ────
   /** Load the geometry for a design, honoring the revision the client
    *  already knows so unchanged models cost a 304. Several callers can
    *  fire for the same rebuild (a streamed `geometry` alarm and the
@@ -303,6 +222,8 @@ export function useForge() {
     });
   }, []);
 
+  // ── Start calibrating a chosen design (entry from the pick or
+  //    from rehydration) ────────────────────────────────────────────
   const runCalibration = useCallback(
     async ({
       designId: calibrationDesignId,
@@ -338,6 +259,8 @@ export function useForge() {
     [setConfirmedValuesTracked],
   );
 
+  // ── Generation: one design per handoff, in parallel, then parked in
+  //    "choosing" for the user's pick ───────────────────────────────
   const generate = useCallback(
     async ({
       handoffs,
@@ -585,6 +508,8 @@ export function useForge() {
     revision triggers an unconditional refetch. Network failures leave the
     optimistic local value in place; OK flushes server state on finish.
   */
+  // ── Calibration: apply one confirmed parameter (PATCH + rebuild),
+  //    then finish ─────────────────────────────────────────────────
   const confirmParamValue = useCallback(
     (name: string, value: number) => {
       const currentDesignId = designId;
@@ -694,6 +619,7 @@ export function useForge() {
   );
 
   /** Resolve the parked generate()/rehydrate() with the picked variant id. */
+  // ── Resolve the parked pick (a tile id, or null for abort) ───────
   const chooseDesign = useCallback((pickedDesignId: string | null) => {
     chooseResolverRef.current?.(pickedDesignId);
     chooseResolverRef.current = null;
@@ -781,6 +707,7 @@ export function useForge() {
     (e.g. re-entering the CAD workspace from the timeline). Resets the
     calibration view to a clean spinner and re-fetches the model.
   */
+  // ── Re-load the current design's geometry (timeline re-entry) ────
   const reloadCurrentDesignGeometry = useCallback(async (): Promise<void> => {
     if (designId === null) return;
     setError("");
@@ -805,6 +732,7 @@ export function useForge() {
     into calibration, or straight to ready if the design has no
     calibratable parameters.
   */
+  // ── Re-open the picker with this run's original candidate set ────
   const reopenDesignPicker = useCallback(
     async ({ runId }: { runId: string | null }): Promise<string | null> => {
       const entry = runId ? loadStoredDesignState(runId) : null;
@@ -942,6 +870,7 @@ export function useForge() {
     Restore a previously generated design for this run instead of paying for
     a full regeneration. Returns true when a design/variant set was restored.
   */
+  // ── Rehydrate from the stored entry (refresh / run re-entry) ─────
   const rehydrate = useCallback(
     async ({
       runId,
@@ -1106,6 +1035,7 @@ export function useForge() {
     between. If the copy has no calibratable parameters it goes straight to
     "ready"; otherwise its calibration wizard starts.
   */
+  // ── Single-duplicate refinement round (feedback goes to a copy) ──
   const refineDesign = useCallback(
     async ({ feedback, runId }: { feedback: string; runId: string | null }) => {
       const source = designId;
@@ -1204,6 +1134,7 @@ export function useForge() {
     [designId, runCalibration, acquireBusy, releaseBusy],
   );
 
+  // ── Reset to idle (abort, stop, clear all shared state) ──────────
   const reset = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;

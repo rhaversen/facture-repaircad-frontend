@@ -1,8 +1,7 @@
 "use client";
 
-import RepairProgress from "@/components/RepairProgress";
+import Page from "@/components/Page";
 import type { StepClickStates, StepReasons } from "@/lib/runProgress";
-import { AppShell, Card } from "@/components/AppShell";
 import { useEffect, useState } from "react";
 import { createAnnotatedCopy } from "@/lib/annotatedImageUtils";
 import type {
@@ -84,107 +83,90 @@ export default function ReviewIntake({
   const allCopiesReady = photos.every((photo) => annotatedCopies[photo.id]);
 
   return (
-    <AppShell>
-      <Card>
-        <div className="relative mb-6 shrink-0">
-          <button
-            type="button"
-            title="Start a new run"
-            className="btn-utility absolute -top-2 right-0"
-            onClick={onNewRun}
-          >
-            ＋ New run
-          </button>
-          <RepairProgress
-            currentStep={3}
-            onStepClick={onStepClick}
-            clickStates={clickStates}
-            reasons={reasons}
-          />
-        </div>
+    <Page
+      currentStep={3}
+      onNewRun={onNewRun}
+      onStepClick={onStepClick}
+      clickStates={clickStates}
+      reasons={reasons}
+      title="Review your repair"
+      subtitle="Check the information below before submitting."
+    >
+      <div className="mt-8">
+      <h2 className="mb-2.5 text-lg">Repair description</h2>
+      <p>{description}</p>
+      </div>
 
-        <h1>Review your repair</h1>
+      <div className="mt-8">
+        <h2 className="mb-2.5 text-lg">Photos</h2>
 
-        <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
-          Check the information below before submitting.
-        </p>
+        {photos.map((photo) => {
+          const photoAnnotations = annotations.filter(
+            (annotation) => annotation.photoId === photo.id,
+          );
+          const annotatedCopy = annotatedCopies[photo.id];
 
-        <div className="mt-8">
-          <h2 className="mb-2.5 text-lg">Repair description</h2>
-          <p>{description}</p>
-        </div>
+          return (
+            <div
+              className="grid grid-cols-[180px_1fr] gap-4.5 border-b border-line-soft py-4.5 max-[640px]:grid-cols-1"
+              key={photo.id}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={annotatedCopy?.url || photo.previewUrl}
+                alt={`Annotated ${photo.file.name}`}
+                className="h-[130px] w-[180px] rounded-lg border border-line-light object-cover max-[640px]:h-auto max-[640px]:w-full"
+              />
+              <div>
+                <strong>{photo.file.name}</strong>
 
-        <div className="mt-8">
-          <h2 className="mb-2.5 text-lg">Photos</h2>
+                {annotatedCopy && (
+                  <div className="mt-1 text-sm text-[#707782]">
+                    Annotated copy: {annotatedCopy.file.name}
+                  </div>
+                )}
 
-          {photos.map((photo) => {
-            const photoAnnotations = annotations.filter(
-              (annotation) => annotation.photoId === photo.id,
-            );
-            const annotatedCopy = annotatedCopies[photo.id];
-
-            return (
-              <div
-                className="grid grid-cols-[180px_1fr] gap-4.5 border-b border-line-soft py-4.5 max-[640px]:grid-cols-1"
-                key={photo.id}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={annotatedCopy?.url || photo.previewUrl}
-                  alt={`Annotated ${photo.file.name}`}
-                  className="h-[130px] w-[180px] rounded-lg border border-line-light object-cover max-[640px]:h-auto max-[640px]:w-full"
-                />
-                <div>
-                  <strong>{photo.file.name}</strong>
-
-                  {annotatedCopy && (
-                    <div className="mt-1 text-sm text-[#707782]">
-                      Annotated copy: {annotatedCopy.file.name}
-                    </div>
-                  )}
-
-                  {photoAnnotations.length > 0 ? (
-                    <div className="mt-3.5">
-                      <strong>Annotations</strong>
-                      <ul className="mt-2 pl-5">
-                        {photoAnnotations.map((annotation) => (
-                          <li key={annotation.id}>
-                            {annotation.label}
-                            {annotation.sizeReference &&
-                              ` (size reference: ${annotation.sizeReference.knownDimension} ${annotation.sizeReference.unit})`}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-faint">No annotations</p>
-                  )}
-                </div>
+                {photoAnnotations.length > 0 ? (
+                  <div className="mt-3.5">
+                    <strong>Annotations</strong>
+                    <ul className="mt-2 pl-5">
+                      {photoAnnotations.map((annotation) => (
+                        <li key={annotation.id}>
+                          {annotation.label}
+                          {annotation.sizeReference &&
+                            ` (size reference: ${annotation.sizeReference.knownDimension} ${annotation.sizeReference.unit})`}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <p className="text-sm text-faint">No annotations</p>
+                )}
               </div>
-            );
-          })}
-        </div>
+            </div>
+          );
+        })}
+      </div>
 
-        {submissionError && (
-          <p className="mt-4 rounded-lg bg-[#fff0f0] px-3.5 py-3 text-sm text-[#a22c2c]">
-            {submissionError}
-          </p>
-        )}
+      {submissionError && (
+        <p className="mt-4 rounded-lg bg-[#fff0f0] px-3.5 py-3 text-sm text-[#a22c2c]">
+          {submissionError}
+        </p>
+      )}
 
-        <div className="mt-9 flex justify-between gap-4 max-[640px]:flex-col-reverse max-[640px]:[&>button]:w-full">
-          <button type="button" className="btn-secondary" onClick={onBack}>
-            ← Back to annotations
-          </button>
+      <div className="mt-9 flex justify-between gap-4 max-[640px]:flex-col-reverse max-[640px]:[&>button]:w-full">
+        <button type="button" className="btn-secondary" onClick={onBack}>
+          ← Back to annotations
+        </button>
 
-          <button
-            type="button"
-            onClick={() => onSubmit(annotatedCopies)}
-            disabled={submitting || !allCopiesReady}
-          >
-            {submitting ? "Submitting..." : "Submit"}
-          </button>
-        </div>
-      </Card>
-    </AppShell>
+        <button
+          type="button"
+          onClick={() => onSubmit(annotatedCopies)}
+          disabled={submitting || !allCopiesReady}
+        >
+          {submitting ? "Submitting..." : "Submit"}
+        </button>
+      </div>
+    </Page>
   );
 }

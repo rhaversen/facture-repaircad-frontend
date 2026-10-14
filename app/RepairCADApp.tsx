@@ -4,18 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import RunList from "@/features/runs/RunList";
 import DescribeRepair from "@/features/intake/DescribeRepair";
-import PhotoAnnotation from "@/features/intake/PhotoAnnotation";
+import AnnotatePhotos from "@/features/intake/AnnotatePhotos";
 import ReviewIntake from "@/features/intake/ReviewIntake";
 import CadModelView from "@/features/forge/CadModelView";
-import ClarificationForm from "@/features/chat/ClarificationForm";
-import { FlowChatFrame } from "@/features/chat/FlowChatEmbed";
-import RepairProgress from "@/components/RepairProgress";
-import { AppShell, Card } from "@/components/AppShell";
+import ChatScreen from "@/features/chat/ChatScreen";
 import { useRepairRun } from "@/hooks/useRepairRun";
 import { useIntake } from "@/hooks/useIntake";
 import { authUrl, getMe, logout } from "@/lib/auth";
 import { buildIntakeMessage, buildClarificationAnnotations } from "@/lib/intakeMessageUtils";
-import { describeMessageContent } from "@/lib/messageContent";
 import {
   deriveScreen,
   hasUserTurn,
@@ -24,6 +20,9 @@ import {
   screenForSelectedRun,
   stepNav,
   timelineStepStates,
+  RUN_LIST,
+  CHAT_SCREEN,
+  CAD_SCREEN,
   type TimelineNavState,
 } from "@/lib/runProgress";
 import { collectHandoffs } from "@/lib/handoffs";
@@ -36,9 +35,6 @@ import { s2NodeId } from "@/lib/pipeline";
   effects. handoffDismissed keeps "Back to chat" sticky until the handoff
   clears, which re-arms the auto-advance.
 */
-const RUN_LIST = 7;
-const CAD_SCREEN = 6;
-const CHAT_SCREEN = 5;
 
 export default function RepairCADApp() {
   /*
@@ -416,56 +412,15 @@ export default function RepairCADApp() {
 
   if (screen === 2) {
     return (
-      <AppShell>
-        <Card className="!max-w-[1600px] !px-10">
-          <div className="relative mb-6 shrink-0">
-            <button
-              type="button"
-              title="Start a new run"
-              className="btn-utility absolute -top-2 right-0"
-              onClick={handleCreateRun}
-            >
-              ＋ New run
-            </button>
-            <RepairProgress
-              currentStep={2}
-              onStepClick={handleTimelineStep}
-              clickStates={stepStates}
-              reasons={stepReasons}
-            />
-          </div>
-
-          <h1>Annotate your photos</h1>
-
-          <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
-            Mark important parts of the photo and briefly describe what they show
-            or why they matter for the repair.
-          </p>
-
-          <PhotoAnnotation intake={intake} withSizeReference />
-
-          {intake.photos.length > 0 && !intake.hasMeasurementReference && (
-            <p className="mt-6 -mb-3 text-right text-sm text-[#a05a00]">
-              Mark at least one annotation as a size reference (with its known
-              dimension) to continue.
-            </p>
-          )}
-
-          <div className="mt-9 flex justify-between gap-4 max-[640px]:flex-col-reverse max-[640px]:[&>button]:w-full">
-            <button type="button" className="btn-secondary" onClick={() => setScreen(1)}>
-              ← Back
-            </button>
-
-            <button
-              type="button"
-              disabled={!intake.hasMeasurementReference}
-              onClick={() => setScreen(3)}
-            >
-              Review →
-            </button>
-          </div>
-        </Card>
-      </AppShell>
+      <AnnotatePhotos
+        intake={intake}
+        onBack={() => setScreen(1)}
+        onContinue={() => setScreen(3)}
+        onNewRun={handleCreateRun}
+        onStepClick={handleTimelineStep}
+        clickStates={stepStates}
+        reasons={stepReasons}
+      />
     );
   }
 
@@ -488,68 +443,19 @@ export default function RepairCADApp() {
   }
 
   if (screen === CHAT_SCREEN) {
-    /*
-      One page, two states, both locked to the viewport height (no page
-      scrollbar):
-      - While the pipeline sends the case back for clarification there is no
-        conversation to follow — the last assistant question is shown as a
-        focused card next to the response form instead of the full transcript.
-      - Otherwise the whole conversation fills the rest of the viewport.
-      The corner New run button sits in the corner of the timeline row.
-    */
-    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-    const lastQuestion = describeMessageContent(lastAssistant?.content);
-
     return (
-      <div className="flex h-dvh flex-col overflow-hidden">
-        <div className="relative shrink-0 px-6 pb-4 pt-4 max-[640px]:px-5">
-          <button
-            type="button"
-            title="Start a new run"
-            className="btn-utility absolute right-6 top-4 max-[640px]:right-5"
-            onClick={handleCreateRun}
-          >
-            ＋ New run
-          </button>
-          <RepairProgress
-            currentStep={4}
-            flush
-            onStepClick={handleTimelineStep}
-            clickStates={stepStates}
-            reasons={stepReasons}
-            clarificationActive={waitingForCaseClarification}
-          />
-        </div>
-
-        {waitingForCaseClarification ? (
-          <div className="flex min-h-0 flex-1 justify-center overflow-y-auto overscroll-contain px-6 pb-4 max-[640px]:px-4">
-            <div className="max-h-full w-full max-w-[860px]">
-              <div className="rounded-2xl border border-line bg-white p-6 shadow-[0_1px_3px_rgba(16,24,40,0.06)] max-[640px]:p-4">
-                <div className="mb-4 text-lg font-bold">Repair clarification</div>
-
-                <ClarificationForm
-                  question={lastQuestion}
-                  onSubmit={handleClarificationSubmit}
-                  submitting={clarificationSubmitting}
-                  error={clarificationError}
-                />
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="mx-auto flex min-h-0 w-full max-w-[1240px] flex-1 px-6 pb-4 max-[640px]:px-4">
-            <div className="flex min-h-0 w-full flex-col overflow-hidden rounded-xl border border-line bg-white">
-              <div className="flex shrink-0 items-center gap-2 border-b border-line-soft px-4 py-2.5">
-                <span className="inline-block h-1 w-1 rounded-full bg-brand"></span>
-                <span className="text-xs font-medium text-muted-2">Repair planning</span>
-              </div>
-              <div className="min-h-0 flex-1 overflow-hidden">
-                <FlowChatFrame runId={activeRunId} title="Repair planning" />
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+      <ChatScreen
+        runId={activeRunId}
+        messages={messages}
+        waitingForCaseClarification={waitingForCaseClarification}
+        clarificationSubmitting={clarificationSubmitting}
+        clarificationError={clarificationError}
+        onNewRun={handleCreateRun}
+        onStepClick={handleTimelineStep}
+        clickStates={stepStates}
+        reasons={stepReasons}
+        onClarificationSubmit={handleClarificationSubmit}
+      />
     );
   }
 

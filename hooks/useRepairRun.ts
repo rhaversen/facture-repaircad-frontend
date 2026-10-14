@@ -133,6 +133,15 @@ export function useRepairRun() {
     }
   }
 
+  /** Drop the active run (no network call) — used when leaving a run for
+   the runs list, whose reload is driven by the screen change itself. */
+  function clearRun() {
+   setRunId(null);
+   setRun(null);
+   setMessages([]);
+   setRunningDoc({});
+  }
+
   async function selectRun(runIdToSelect: string): Promise<{
     run: FlowRun;
     messages: FlowMessage[];
@@ -166,8 +175,8 @@ export function useRepairRun() {
     setSubmitting(true);
     setSubmissionError("");
     try {
-      // Attach to the run created via "New run" when one is active; otherwise
-      // create it here so intake can also start on its own.
+      // Attach to the run created via "New repair" when one is active;
+      // otherwise create it here so intake can also start on its own.
       let activeRunId = stateRef.current.runId;
       if (!activeRunId) {
         const created = await apiCreateRun();
@@ -323,6 +332,7 @@ export function useRepairRun() {
     listRuns,
     createRun,
     selectRun,
+    clearRun,
     reconcileRun: reconcileRunGuarded,
   };
 }

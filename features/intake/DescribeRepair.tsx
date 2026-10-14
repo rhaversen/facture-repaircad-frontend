@@ -1,7 +1,7 @@
 "use client";
 
-import RepairProgress from "@/components/RepairProgress";
-import { AppHeader, AppShell, Card } from "@/components/AppShell";
+import Page from "@/components/Page";
+import type { StepClickStates, StepReasons } from "@/lib/runProgress";
 import { MAX_PHOTOS } from "@/hooks/useIntake";
 import type { Photo } from "@/lib/types";
 
@@ -12,9 +12,11 @@ interface DescribeRepairProps {
   onAddPhotos: (files: File[]) => void;
   onRemovePhoto: (photoId: string) => void;
   onContinue: () => void;
-  onNewRun: () => void;
-  onViewRuns: () => void;
-  onLogout: () => void;
+  onAllRuns: () => void;
+  /* Timeline as navigation: click a reachable step to jump to it. */
+  onStepClick?: (step: number) => void;
+  clickStates?: StepClickStates;
+  reasons?: StepReasons;
 }
 
 export default function DescribeRepair({
@@ -24,108 +26,109 @@ export default function DescribeRepair({
   onAddPhotos,
   onRemovePhoto,
   onContinue,
-  onNewRun,
-  onViewRuns,
-  onLogout,
+  onAllRuns,
+  onStepClick,
+  clickStates,
+  reasons,
 }: DescribeRepairProps) {
   return (
-    <AppShell>
-      <Card>
-        <AppHeader
-          utilities={
-            <>
-              <button type="button" className="btn-utility" onClick={onNewRun}>
-                New run
-              </button>
-              <button type="button" className="btn-utility" onClick={onViewRuns}>
-                All runs
-              </button>
-              <button type="button" className="btn-ghost" onClick={onLogout}>
-                Sign out
-              </button>
-            </>
-          }
-        />
-
-        <RepairProgress currentStep={1} />
-
-        <h1>Describe your repair</h1>
-
-        <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
-          Tell us what happened. You can add photos to show the object and the
-          repair area.
-        </p>
-
-        <label htmlFor="description">
-          What happened and what is broken or missing?
-        </label>
-
-        <textarea
-          id="description"
-          value={description}
-          onChange={(event) => onDescriptionChange(event.target.value)}
-          placeholder="For example: The cabinet handle broke off and the broken piece is missing."
-          rows={6}
-        />
-
-        <h2 className="mt-7">Add photos</h2>
-
-        <p>
-          Optional. Add photos if they help show the object and the repair
-          area. Up to {MAX_PHOTOS}.
-        </p>
-
-        {photos.length < MAX_PHOTOS ? (
-          <label className="mt-2 mb-7 inline-flex cursor-pointer items-center justify-center rounded-[10px] border border-brand bg-white px-4.5 py-3 font-semibold text-brand hover:bg-[#f6f8ff]">
-            + Add photos
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              className="hidden"
-              onChange={(event) => {
-                onAddPhotos(Array.from(event.target.files ?? []));
-                event.target.value = "";
-              }}
-            />
-          </label>
-        ) : (
-          <p className="mt-2 mb-7 text-sm text-[#a05a00]">
-            Maximum of {MAX_PHOTOS} photos reached. Remove one to add another.
+    <Page
+      currentStep={1}
+      onAllRuns={onAllRuns}
+      onStepClick={onStepClick}
+      clickStates={clickStates}
+      reasons={reasons}
+    >
+      <div className="flex flex-col gap-8 lg:flex-row lg:items-start lg:gap-12">
+        <section className="flex min-w-0 flex-1 flex-col">
+          <h1 className="mb-3">Describe your repair</h1>
+          <p className="text-[17px] leading-relaxed text-muted">
+            Tell us what happened. You can add photos to show the object and
+            the repair area.
           </p>
-        )}
 
-        {photos.length > 0 && (
-          <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-4 max-[640px]:grid-cols-1">
-            {photos.map((photo) => (
-              <div className="overflow-hidden rounded-xl border border-line-light bg-white" key={photo.id}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={photo.previewUrl} alt={photo.file.name} className="block h-[180px] w-full bg-[#eceff2] object-cover" />
-                <div className="p-3.5">
-                  <div className="break-anywhere text-sm text-[#59616d]">{photo.file.name}</div>
-                  <button
-                    type="button"
-                    className="mt-3 w-full bg-transparent px-0 py-2 text-[#a22c2c] font-medium hover:bg-transparent hover:underline"
-                    onClick={() => onRemovePhoto(photo.id)}
-                  >
-                    Remove
-                  </button>
-                </div>
-              </div>
-            ))}
+          <label htmlFor="description">
+            What happened and what is broken or missing?
+          </label>
+
+          <textarea
+            id="description"
+            value={description}
+            onChange={(event) => onDescriptionChange(event.target.value)}
+            placeholder="For example: The cabinet handle broke off and the broken piece is missing."
+            rows={10}
+          />
+        </section>
+
+        <aside className="flex w-full shrink-0 flex-col lg:w-[400px]">
+          <div className="flex items-baseline justify-between gap-3">
+            <h2>Add photos</h2>
+            <span className="shrink-0 text-sm text-[#7a828d]">
+              {photos.length}/{MAX_PHOTOS}
+            </span>
           </div>
-        )}
 
-        <div className="mt-8 flex justify-end">
+          <p className="mt-1 text-sm">
+            Optional. Add photos if they help show the object and the repair
+            area.
+          </p>
+
+          {photos.length < MAX_PHOTOS && (
+            <label className="mt-3 flex w-full cursor-pointer items-center justify-center rounded-[10px] border border-brand bg-white px-4.5 py-3 font-semibold text-brand hover:bg-[#f6f8ff]">
+              + Add photos
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  onAddPhotos(Array.from(event.target.files ?? []));
+                  event.target.value = "";
+                }}
+              />
+            </label>
+          )}
+
+          {photos.length > 0 && (
+            <ul className="mt-4 grid grid-cols-2 gap-3">
+              {photos.map((photo) => (
+                <li
+                  key={photo.id}
+                  className="overflow-hidden rounded-xl border border-line-light bg-white"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={photo.previewUrl}
+                    alt={photo.file.name}
+                    className="block h-[150px] w-full bg-[#eceff2] object-cover"
+                  />
+                  <div className="p-2.5">
+                    <div className="break-anywhere text-sm text-[#59616d]">
+                      {photo.file.name}
+                    </div>
+                    <button
+                      type="button"
+                      className="mt-2 w-full bg-transparent px-0 py-1.5 text-sm font-medium text-[#a22c2c] hover:bg-transparent hover:underline"
+                      onClick={() => onRemovePhoto(photo.id)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
           <button
             type="button"
+            className="mt-6 w-full"
             onClick={onContinue}
             disabled={!description.trim() || photos.length === 0}
           >
             Continue →
           </button>
-        </div>
-      </Card>
-    </AppShell>
+        </aside>
+      </div>
+    </Page>
   );
 }

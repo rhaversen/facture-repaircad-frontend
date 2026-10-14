@@ -59,7 +59,7 @@
   }
 
   textarea {
-    @apply w-full resize-y rounded-[10px] border border-[#cbd0d6] bg-white px-4 py-3.5 leading-relaxed;
+    @apply min-h-[7.5rem] w-full resize-y rounded-[10px] border border-[#cbd0d6] bg-white px-4 py-3.5 leading-relaxed;
   }
 
   select {
@@ -172,5 +172,101 @@
     to {
       transform: rotate(360deg);
     }
+  }
+
+  /* Parameter slider (forge-style, adapted to this app's palette): the
+     filled part of the track is drawn with a gradient sized by --fill,
+     which the component sets inline to the percent between min and max. */
+  .forge-slider {
+    appearance: none;
+    width: 100%;
+    height: 16px;
+    background: transparent;
+    cursor: pointer;
+    position: relative;
+    z-index: 1;
+  }
+  .forge-slider:hover,
+  .forge-slider:focus-visible,
+  .forge-slider:active {
+    z-index: 2;
+  }
+  .forge-slider::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 9999px;
+    background: linear-gradient(
+      to right,
+      #2448b8 var(--fill, 0%),
+      #e1e4e8 var(--fill, 0%)
+    );
+  }
+  .forge-slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    margin-top: -4px;
+    border-radius: 9999px;
+    background: #ffffff;
+    border: 2px solid #2448b8;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+  }
+  .forge-slider:hover::-webkit-slider-thumb,
+  .forge-slider:focus-visible::-webkit-slider-thumb {
+    transform: scale(1.25);
+    box-shadow: 0 0 0 4px #e8edff;
+  }
+  .forge-slider:active::-webkit-slider-thumb {
+    transform: scale(1.15);
+    background: #2448b8;
+  }
+  .forge-slider:disabled {
+    cursor: default;
+    opacity: 0.45;
+  }
+  .forge-slider:disabled::-webkit-slider-thumb {
+    transform: none;
+    box-shadow: none;
+  }
+  .forge-slider::-moz-range-track {
+    height: 4px;
+    border-radius: 9999px;
+    background: #e1e4e8;
+  }
+  .forge-slider::-moz-range-progress {
+    height: 4px;
+    border-radius: 9999px;
+    background: #2448b8;
+  }
+  .forge-slider::-moz-range-thumb {
+    width: 8px;
+    height: 8px;
+    border-radius: 9999px;
+    background: #ffffff;
+    border: 2px solid #2448b8;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+  }
+  .forge-slider:hover::-moz-range-thumb,
+  .forge-slider:focus-visible::-moz-range-thumb {
+    transform: scale(1.25);
+    box-shadow: 0 0 0 4px #e8edff;
+  }
+  .forge-slider:disabled::-moz-range-thumb {
+    transform: none;
+    box-shadow: none;
+  }
+
+  /* Numeric companion input for the sliders: the browser spin buttons are
+     hidden — the slider is the pointer affordance, and the arrow keys still
+     step the value while the field is focused. */
+  .forge-number::-webkit-outer-spin-button,
+  .forge-number::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .forge-number {
+    -moz-appearance: textfield;
+    appearance: textfield;
   }
 }

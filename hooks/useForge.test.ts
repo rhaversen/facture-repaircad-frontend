@@ -3,7 +3,7 @@ import { renderHook, act } from "@testing-library/react";
 import "./testAct";
 
 import { useForge, loadStoredDesignState, clearStoredDesignState } from "./useForge";
-import type { GeometrySummary, StreamEvent } from "@/lib/types";
+import type { GeometrySummary, Parameter, StreamEvent } from "@/lib/types";
 import * as forgeClient from "@/lib/forgeClient";
 import * as glb from "@/lib/glb";
 
@@ -26,10 +26,13 @@ async function poll(
 }
 
 /*
-  Unit tests for the variant selection flow: one design per handoff, the
-  picked design keeps its own handoff, and the mapping survives a rehydrate.
-  All Forge client calls are mocked; SSE streams are emulated with
-  ReadableStream responses.
+  Unit tests for the variant selection flow under the simplified store model:
+  each run entry is { designId, phase, variantDesignIds, variantHandoffs,
+  handoffIndex }, with no iteration lineage. The picker is re-openable at any
+  time from the stored candidate ids, and the stored handoff index keeps the
+  refinement bootstrap pointed at the chosen variant's brief. All Forge
+  client calls are mocked; SSE streams are emulated with ReadableStream
+  responses.
 */
 
 vi.mock("@/lib/forgeClient", async (importOriginal) => {
@@ -61,6 +64,19 @@ const HANDOFFS = ["handoff-one", "handoff-two", "handoff-three"];
 const IDS = ["id-1", "id-2", "id-3"];
 /** Ids handed out by duplicateDesign mocks in call order. */
 const DUPLICATE_IDS = ["dup-1", "dup-2", "dup-3"];
+
+/** A calibratable (min !== max) length parameter. */
+const WIDTH_PARAM: Parameter = {
+  name: "width",
+  description: "Distance between mounting tabs",
+  kind: "length",
+  unit: "mm",
+  default: 42,
+  min: 10,
+  max: 90,
+  value: 42,
+  set: true,
+};
 
 const SUMMARY_GEOMETRY: GeometrySummary = {
   revision: "r1",
@@ -99,6 +115,16 @@ function sseStream(events: StreamEvent[]): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+/** Read the raw persisted entry for a run so tests can inspect exact keys. */
+function storedEntry(
+  runId: string,
+): Record<string, unknown> {
+  const all = JSON.parse(
+    window.localStorage.getItem("repaircad.forgeDesigns") ?? "{}",
+  ) as Record<string, Record<string, unknown>>;
+  return all[runId] ?? {};
 }
 
 /** Wire mocks for a successful N-variant generation round. */
@@ -184,7 +210,7 @@ describe("useForge variant selection", () => {
     }
   });
 
-  it("exposes the picked variant's own handoff as selectedHandoff", async () => {
+  it("stores the run as { designId, phase, variantDesignIds, variantHandoffs, handoffIndex } and never a history", async () => {
     mockSuccessfulGeneration();
     const { result } = renderHook(() => useForge());
 
@@ -192,45 +218,37 @@ describe("useForge variant selection", () => {
     act(() => {
       parked = result.current.generate({ handoffs: HANDOFFS, runId: "run-2" });
     });
-    // Wait until every variant tile exists before picking, so the pick
-    // cannot race a variant that has not registered its handoff yet.
-    await poll(() => result.current.variants.length === HANDOFFS.length);
     await poll(() => result.current.phase === "choosing");
+    // While choosing, the entry carries the candidate ids, their handoff
+    // pairing and the phase — and nothing else.
+    const choosingEntry = storedEntry("run-2");
+    expect(choosingEntry).toEqual({
+      phase: "choosing",
+      variantDesignIds: expect.arrayContaining(["id-1", "id-2", "id-3"]),
+      variantHandoffs: expect.objectContaining({ "id-3": 2 }),
+    });
+    expect(Object.keys(choosingEntry)).not.toContain("iterations");
+    expect(Object.keys(choosingEntry)).not.toContain("selectedHandoff");
+
     act(() => {
       result.current.chooseDesign("id-3");
     });
     await parked;
-    // The pick's continuation applies state asynchronously; give React a
-    // macrotask to flush before asserting.
     await poll(
       () => result.current.phase === "ready" || result.current.phase === "error",
     );
 
     expect(result.current.designId).toBe("id-3");
-    expect(result.current.selectedHandoff).toBe("handoff-three");
-  });
-
-  it("stores the selected handoff for the run and persists it", async () => {
-    mockSuccessfulGeneration();
-    const { result } = renderHook(() => useForge());
-
-    let parked!: Promise<void>;
-    act(() => {
-      parked = result.current.generate({ handoffs: HANDOFFS, runId: "run-3" });
-    });
-    await poll(() => result.current.variants.length === HANDOFFS.length);
-    await poll(() => result.current.phase === "choosing");
-    act(() => {
-      result.current.chooseDesign("id-2");
-    });
-    await parked;
-    await poll(
-      () => result.current.phase === "ready" || result.current.phase === "error",
-    );
-
-    const stored = loadStoredDesignState("run-3");
-    expect(stored?.designId).toBe("id-2");
-    expect(stored?.selectedHandoff).toBe("handoff-two");
+    // The pick overwrites the single selection field; the candidate list
+    // (and its handoff pairing) is kept so the picker can be reopened and
+    // the refinement bootstrap can seed the chosen variant's brief.
+    const stored = loadStoredDesignState("run-2");
+    expect(stored?.designId).toBe("id-3");
+    expect(stored?.phase).toBe("ready");
+    expect(stored?.variantDesignIds).toEqual(["id-1", "id-2", "id-3"]);
+    expect(stored?.variantHandoffs?.["id-3"]).toBe(2);
+    expect(stored).not.toHaveProperty("iterations");
+    expect(stored).not.toHaveProperty("selectedHandoff");
   });
 
   it("stops unpicked variants that are still streaming when a pick resolves", async () => {
@@ -256,7 +274,7 @@ describe("useForge variant selection", () => {
     expect(forgeClient.stopDesign).not.toHaveBeenCalled();
   });
 
-  it("rehydrates the picked design and restores its handoff", async () => {
+  it("rehydrates the picked design from the simplified store entry", async () => {
     mockSuccessfulGeneration();
     // Persisted state as generate() would have left it.
     window.localStorage.setItem(
@@ -265,7 +283,7 @@ describe("useForge variant selection", () => {
         "run-5": {
           designId: "id-2",
           phase: "ready",
-          selectedHandoff: "handoff-two",
+          variantDesignIds: IDS,
         },
       }),
     );
@@ -291,40 +309,44 @@ describe("useForge variant selection", () => {
 
     expect(restored).toBe(true);
     expect(result.current.designId).toBe("id-2");
-    expect(result.current.selectedHandoff).toBe("handoff-two");
     expect(result.current.phase).toBe("ready");
   });
 
-  it("falls back to the first handoff on rehydrate without stored handoff", async () => {
-    vi.clearAllMocks();
+  it("rehydrates a choosing entry and reopens the picker with stored candidates", async () => {
+    mockSuccessfulGeneration();
     window.localStorage.setItem(
       "repaircad.forgeDesigns",
       JSON.stringify({
-        "run-6": { designId: "id-1", phase: "ready" },
+        "run-6": {
+          phase: "choosing",
+          variantDesignIds: IDS,
+        },
       }),
     );
-    vi.mocked(forgeClient.getDesign).mockResolvedValue({
-      _id: "id-2",
-      parameters: [],
-      geometry: SUMMARY_GEOMETRY,
-    });
-    vi.mocked(forgeClient.fetchDesignGeometry).mockResolvedValue({
-      status: "ok",
-      blob: new ArrayBuffer(0),
-      revision: "r1",
-    } as never);
 
     const { result } = renderHook(() => useForge());
+    let rehydrated!: Promise<boolean>;
     let restored = false;
     await act(async () => {
-      restored = await result.current.rehydrate({
-        runId: "run-6",
-        handoffs: HANDOFFS,
-      });
+      rehydrated = result.current.rehydrate({ runId: "run-6", handoffs: HANDOFFS });
+    });
+    // A choosing entry parks the rehydrate on the pick — the tiles return
+    // from the stored candidate ids, selection is still open.
+    await poll(() => result.current.phase === "choosing");
+    await poll(() => result.current.variants.length === IDS.length);
+    expect(result.current.designId).toBeNull();
+
+    act(() => {
+      result.current.chooseDesign(IDS[1]);
+    });
+    restored = await act(async () => {
+      return await rehydrated;
     });
 
     expect(restored).toBe(true);
-    expect(result.current.selectedHandoff).toBe("handoff-one");
+    expect(result.current.designId).toBe("id-2");
+    expect(result.current.phase).toBe("ready");
+    expect(storedEntry("run-6").variantDesignIds).toEqual(IDS);
   });
 
   it("rejects generate() with an empty handoff list", async () => {
@@ -341,13 +363,18 @@ describe("useForge variant selection", () => {
     clearStoredDesignState("run-8");
     window.localStorage.setItem(
       "repaircad.forgeDesigns",
-      JSON.stringify({ "run-8": { designId: "x", phase: "ready" } }),
+      JSON.stringify({
+        "run-8": {
+          designId: "x",
+          phase: "ready",
+          variantDesignIds: IDS,
+        },
+      }),
     );
     const { result } = renderHook(() => useForge());
     act(() => {
       result.current.reset();
     });
-    expect(result.current.selectedHandoff).toBeNull();
     expect(result.current.designId).toBeNull();
   });
 });
@@ -536,7 +563,7 @@ describe("useForge single-duplicate refinement rounds", () => {
     expect(result.current.designId).toBe(DUPLICATE_IDS[0]);
   });
 
-  it("records each round as a linear iteration lineage entry with the copy as picked", async () => {
+  it("stores the refined round without any iteration lineage", async () => {
     const { result } = renderHook(() => useForge());
     await runInitialGenerationAndPick(result, "run-refine-2", "id-1");
 
@@ -553,21 +580,13 @@ describe("useForge single-duplicate refinement rounds", () => {
     );
     await parked;
 
-    expect(result.current.iterations).toHaveLength(2);
-    const [firstRound, secondRound] = result.current.iterations;
-    // Initial generation counts as its own round.
-    expect(firstRound.round).toBe(1);
-    expect(firstRound.feedback).toBe("handoff-one");
-    expect(firstRound.pickedDesignId).toBe("id-1");
-    expect(secondRound.round).toBe(2);
-    expect(secondRound.feedback).toBe("make it sturdier");
-    expect(secondRound.sourceDesignId).toBe("id-1");
-    expect(secondRound.variantIds).toEqual([DUPLICATE_IDS[0]]);
-    expect(secondRound.pickedDesignId).toBe(DUPLICATE_IDS[0]);
-
     const stored = loadStoredDesignState("run-refine-2");
-    expect(stored?.iterations).toEqual(result.current.iterations);
     expect(stored?.designId).toBe(DUPLICATE_IDS[0]);
+    // The candidate list still holds the original trio so the picker can be
+    // reopened; the refine copy is not a picker candidate.
+    expect(stored?.variantDesignIds).toEqual(IDS);
+    expect(stored).not.toHaveProperty("iterations");
+    expect(stored).not.toHaveProperty("selectedHandoff");
   });
 
   it("does not refine while there is no current design", async () => {
@@ -585,14 +604,13 @@ describe("useForge single-duplicate refinement rounds", () => {
     expect(result.current.phase).toBe("idle");
   });
 
-  it("loads legacy store entries with no iterations key", async () => {
+  it("loads a legacy entry with only { designId, phase }", async () => {
     window.localStorage.setItem(
       "repaircad.forgeDesigns",
       JSON.stringify({
         "run-refine-4": {
           designId: "id-2",
           phase: "ready",
-          selectedHandoff: "handoff-two",
         },
       }),
     );
@@ -618,38 +636,32 @@ describe("useForge single-duplicate refinement rounds", () => {
 
     expect(restored).toBe(true);
     expect(result.current.designId).toBe("id-2");
-    expect(result.current.iterations).toEqual([]);
+    expect(result.current.phase).toBe("ready");
   });
 
-  it("restores a recorded iteration lineage on rehydrate without reopening the picker", async () => {
-    const lineage = [
-      {
-        round: 1,
-        feedback: "handoff-one",
-        sourceDesignId: "id-1",
-        variantIds: ["id-1", "id-2", "id-3"],
-        pickedDesignId: "id-1",
-      },
-      {
-        round: 2,
-        feedback: "make it sturdier",
-        sourceDesignId: "id-1",
-        variantIds: [DUPLICATE_IDS[0]],
-        pickedDesignId: DUPLICATE_IDS[0],
-      },
-    ];
+  it("rehydrates an entry that still carries legacy iterations keys without honoring them", async () => {
+    // Entries written by an older build may hold `iterations`/`selectedHandoff`;
+    // the loader ignores them entirely — the current shape alone drives state.
     window.localStorage.setItem(
       "repaircad.forgeDesigns",
       JSON.stringify({
         "run-refine-5": {
-          designId: DUPLICATE_IDS[0],
+          designId: "id-2",
           phase: "ready",
+          variantDesignIds: IDS,
           selectedHandoff: "handoff-one",
-          iterations: lineage,
+          iterations: [
+            {
+              round: 1,
+              feedback: "handoff-one",
+              sourceDesignId: "id-1",
+              variantIds: IDS,
+              pickedDesignId: "id-1",
+            },
+          ],
         },
       }),
     );
-
     vi.mocked(forgeClient.getDesign).mockResolvedValue({
       _id: "id-2",
       parameters: [],
@@ -669,46 +681,159 @@ describe("useForge single-duplicate refinement rounds", () => {
         handoffs: HANDOFFS,
       });
     });
-
+    // The legacy keys are ignored: the entry is rewritten in the simplified
+    // shape during rehydrate.
     expect(restored).toBe(true);
-    expect(result.current.iterations).toEqual(lineage);
-    expect(result.current.designId).toBe(DUPLICATE_IDS[0]);
-    // The design page, not the picker, owns a picked design after rehydrate.
-    expect(result.current.variants).toHaveLength(0);
+    const stored = storedEntry("run-refine-5");
+    expect(stored.designId).toBe("id-2");
+    expect(stored.variantDesignIds).toEqual(IDS);
+    expect(stored).not.toHaveProperty("selectedHandoff");
+    expect(stored).not.toHaveProperty("iterations");
+    expect(result.current.designId).toBe("id-2");
+    expect(result.current.phase).toBe("ready");
+  });
+});
+
+describe("re-opening the design picker", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.clearAllMocks();
   });
 
-  it("clears the lineage on reset", async () => {
-    const lineage = [
-      {
-        round: 1,
-        feedback: "handoff-one",
-        sourceDesignId: "id-1",
-        variantIds: ["id-1", "id-2", "id-3"],
-        pickedDesignId: "id-1",
-      },
-    ];
-    window.localStorage.setItem(
-      "repaircad.forgeDesigns",
-      JSON.stringify({
-        "run-refine-6": {
-          designId: "id-1",
-          phase: "ready",
-          selectedHandoff: "handoff-one",
-          iterations: lineage,
-        },
-      }),
-    );
-
+  it("reopens with the run's original candidates and keeps the selection pinned", async () => {
+    mockSuccessfulGeneration();
     const { result } = renderHook(() => useForge());
-    await act(async () => {
-      await result.current.rehydrate({ runId: "run-refine-6", handoffs: HANDOFFS });
-    });
-    expect(result.current.iterations).toEqual(lineage);
 
+    // Pick the first candidate; the design page drives calibration/ready.
+    let gen: Promise<void>;
     act(() => {
-      result.current.reset();
+      gen = result.current.generate({ runId: "run-pick-a", handoffs: HANDOFFS });
     });
-    expect(result.current.iterations).toEqual([]);
+    await poll(() => result.current.variants.length === IDS.length);
+    await poll(() => result.current.phase === "choosing");
+    act(() => {
+      result.current.chooseDesign("id-1");
+    });
+    await act(async () => {
+      await gen;
+    });
+    expect(result.current.designId).toBe("id-1");
+    expect(result.current.phase).toBe("ready");
+    const stored = storedEntry("run-pick-a");
+    expect(stored.designId).toBe("id-1");
+    expect(stored.variantDesignIds).toEqual(IDS);
+
+    // Reopen from the CAD screen: the full candidate list returns.
+    let open: Promise<string | null>;
+    await act(async () => {
+      open = result.current.reopenDesignPicker({ runId: "run-pick-a" });
+    });
+    await poll(() => result.current.phase === "choosing");
+    await poll(() => result.current.variants.length === IDS.length);
+    act(() => {
+      result.current.chooseDesign("id-1");
+    });
+    await act(async () => {
+      await open;
+    });
+
+    expect(result.current.designId).toBe("id-1");
+    expect(result.current.phase).toBe("ready");
+    expect(result.current.model).not.toBeNull();
+    const reopened = storedEntry("run-pick-a");
+    expect(reopened.designId).toBe("id-1");
+    expect(reopened.variantDesignIds).toEqual(IDS);
+  });
+
+  it("re-picking another candidate switches the design and clears confirmations", async () => {
+    mockSuccessfulGeneration();
+    // id-1 carries a calibratable width, the other candidates have no
+    // parameters at all.
+    vi.mocked(forgeClient.getDesign).mockImplementation(async (id) => {
+      if (id === "id-1") {
+        return { _id: id, parameters: [WIDTH_PARAM], geometry: SUMMARY_GEOMETRY };
+      }
+      return { _id: id, parameters: [], geometry: SUMMARY_GEOMETRY };
+    });
+    const { result } = renderHook(() => useForge());
+
+    let gen: Promise<void>;
+    act(() => {
+      gen = result.current.generate({ runId: "run-pick-b", handoffs: HANDOFFS });
+    });
+    await poll(() => result.current.variants.length === IDS.length);
+    await poll(() => result.current.phase === "choosing");
+    act(() => {
+      result.current.chooseDesign("id-1");
+    });
+    await act(async () => {
+      await gen;
+    });
+    // id-1 has a calibratable width, so the design page confirmed it up front.
+    expect(result.current.phase).toBe("calibrating");
+    expect(result.current.confirmedValues).toEqual({ width: 42 });
+
+    let open: Promise<string | null>;
+    await act(async () => {
+      open = result.current.reopenDesignPicker({ runId: "run-pick-b" });
+    });
+    await poll(() => result.current.phase === "choosing");
+    await poll(() => result.current.variants.length === IDS.length);
+    act(() => {
+      result.current.chooseDesign("id-3");
+    });
+    await act(async () => {
+      await open;
+    });
+
+    // The selection moved to the new candidate with a clean confirmation state.
+    expect(result.current.designId).toBe("id-3");
+    expect(result.current.confirmedValues).toEqual({});
+    expect(result.current.phase).toBe("ready");
+    const stored = storedEntry("run-pick-b");
+    expect(stored.designId).toBe("id-3");
+    expect(stored.variantDesignIds).toEqual(IDS);
+    expect(stored).not.toHaveProperty("iterations");
+    expect(stored).not.toHaveProperty("selectedHandoff");
+  });
+
+  it("closing the re-opened picker without a pick keeps the previous design", async () => {
+    mockSuccessfulGeneration();
+    const { result } = renderHook(() => useForge());
+
+    let gen: Promise<void>;
+    act(() => {
+      gen = result.current.generate({ runId: "run-pick-c", handoffs: HANDOFFS });
+    });
+    await poll(() => result.current.variants.length === IDS.length);
+    await poll(() => result.current.phase === "choosing");
+    act(() => {
+      result.current.chooseDesign("id-1");
+    });
+    await act(async () => {
+      await gen;
+    });
+    expect(result.current.designId).toBe("id-1");
+
+    let open: Promise<string | null>;
+    await act(async () => {
+      open = result.current.reopenDesignPicker({ runId: "run-pick-c" });
+    });
+    await poll(() => result.current.phase === "choosing");
+    await poll(() => result.current.variants.length === IDS.length);
+    act(() => {
+      result.current.chooseDesign(null);
+    });
+    await act(async () => {
+      await open;
+    });
+
+    expect(result.current.designId).toBe("id-1");
+    expect(result.current.confirmedValues).toEqual({});
+    expect(result.current.model).not.toBeNull();
+    const stored = storedEntry("run-pick-c");
+    expect(stored.designId).toBe("id-1");
+    expect(stored.phase).toBe("ready");
   });
 });
 

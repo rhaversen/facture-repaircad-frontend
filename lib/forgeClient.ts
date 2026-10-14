@@ -42,7 +42,7 @@ export async function stopDesign(designId: string): Promise<void> {
 export interface ParametersResult {
   parameters: Parameter[];
   geometry: GeometrySummary | null;
-  build: { ok: boolean; errors: number } | null;
+  build: { ok: boolean; errors: number; report?: string } | null;
 }
 
 /** Per-name misfit reasons from a rejected PATCH (HTTP 400): each key is a

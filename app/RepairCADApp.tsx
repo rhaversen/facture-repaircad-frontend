@@ -4,22 +4,33 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import RunList from "@/features/runs/RunList";
 import DescribeRepair from "@/features/intake/DescribeRepair";
-import PhotoAnnotation from "@/features/intake/PhotoAnnotation";
+import AnnotatePhotos from "@/features/intake/AnnotatePhotos";
 import ReviewIntake from "@/features/intake/ReviewIntake";
 import CadModelView from "@/features/forge/CadModelView";
-import CaseClarification from "@/features/chat/CaseClarification";
-import FlowChatEmbed, { FlowChatActions } from "@/features/chat/FlowChatEmbed";
-import RepairProgress from "@/components/RepairProgress";
-import { AppHeader, AppShell, Card } from "@/components/AppShell";
+import ChatScreen from "@/features/chat/ChatScreen";
 import { useRepairRun } from "@/hooks/useRepairRun";
 import { useIntake } from "@/hooks/useIntake";
 import { authUrl, getMe, logout } from "@/lib/auth";
-import { buildIntakeMessage, buildClarificationAnnotations } from "@/lib/intakeMessageUtils";
-import { describeMessageContent } from "@/lib/messageContent";
+import {
+  buildIntakeMessage,
+  buildClarificationAnnotations,
+} from "@/lib/intakeMessageUtils";
 import {
   deriveScreen,
+  hasUserTurn,
   handoffReadyFor,
+  runShowsProgress,
   screenForSelectedRun,
+  stepNav,
+  timelineStepStates,
+  RUN_LIST,
+  CHAT_SCREEN,
+  CAD_SCREEN,
+  CAD_SUBSTEP_PICKER,
+  CAD_SUBSTEP_CALIBRATION,
+  CAD_SUBSTEP_GUIDANCE,
+  type TimelineNavState,
+  type TimelineRoundState,
 } from "@/lib/runProgress";
 import { collectHandoffs } from "@/lib/handoffs";
 import { s2NodeId } from "@/lib/pipeline";
@@ -31,9 +42,6 @@ import { s2NodeId } from "@/lib/pipeline";
   effects. handoffDismissed keeps "Back to chat" sticky until the handoff
   clears, which re-arms the auto-advance.
 */
-const RUN_LIST = 7;
-const CAD_SCREEN = 6;
-const CHAT_SCREEN = 5;
 
 export default function RepairCADApp() {
   /*
@@ -74,6 +82,7 @@ export default function RepairCADApp() {
     listRuns,
     createRun,
     selectRun,
+    clearRun,
     reconcileRun,
   } = repairRun;
 
@@ -85,7 +94,7 @@ export default function RepairCADApp() {
 
   /*
     Run provenance for auto-generate: a run created in this browser session
-    (bootstrap of an empty workspace, the New-run button, or reaching the
+    (bootstrap of an empty workspace, the New-repair button, or reaching the
     chat normally) may auto-generate its CAD models when its handoff lands —
     the user is watching the run live, so no extra Generate click is needed.
     Runs opened from the runs list are never registered, keeping the manual
@@ -121,6 +130,38 @@ export default function RepairCADApp() {
 
   const [handoffDismissed, setHandoffDismissed] = useState(false);
 
+  /* One-shot entry intent: the user opened the CAD workspace via timeline
+     marker 5 (Select Initial Design). The view consumes it when its entry
+     check restores a design — the variant picker reopens instead of
+     landing on the restored design's page. Any other navigation clears it
+     so a stale intent can't fire on a later mount. */
+  const [pickerEntryArmed, setPickerEntryArmed] = useState(false);
+
+  // The CAD sub-state reported by CadModelView (its useForge designId
+  // and final guidance). While the conversation screen is up, the shell
+  // owns markers 5/6/7 — 5 is gated by handoffReady, and 6/7 mirror this
+  // real selection state instead of a placeholder.
+  const [cadSelectionMade, setCadSelectionMade] = useState(false);
+  const [hasAfterCadRun, setHasAfterCadRun] = useState(false);
+  const [roundState, setRoundState] = useState<TimelineRoundState>("none");
+  function handleCadStateChange(state: {
+    cadSelectionMade: boolean;
+    hasAfterCadRun: boolean;
+    roundState: TimelineRoundState;
+  }) {
+    setCadSelectionMade(state.cadSelectionMade);
+    setHasAfterCadRun(state.hasAfterCadRun);
+    setRoundState(state.roundState);
+  }
+  const activeRunId = runId ?? run?._id ?? null;
+  /* A run switch starts fresh design state — the previous run's CAD
+     selection must not enable markers 6/7 for the new run. */
+  useEffect(() => {
+    setCadSelectionMade(false);
+    setHasAfterCadRun(false);
+    setRoundState("none");
+  }, [activeRunId]);
+
   const screen = deriveScreen({
     run,
     messages,
@@ -138,6 +179,60 @@ export default function RepairCADApp() {
   if (prevHandoffReady !== currentHandoffReady) {
     setPrevHandoffReady(currentHandoffReady);
     if (!currentHandoffReady) setHandoffDismissed(false);
+  }
+
+  /*
+    Timeline navigation is decided by stepNav (lib/runProgress) — a pure
+    function of the visible screen plus the run state — so no marker can
+    ever jump into a state that isn't reachable. Every step has some
+    outcome: navigation, a no-op (CAD sub-states), or a lock with a
+    reason (rendered as a disabled marker + tooltip).
+  */
+  const timelineState: TimelineNavState = {
+    screen,
+    conversationReady:
+      run !== null && (hasUserTurn(messages) || runShowsProgress(run)),
+    handoffReady: currentHandoffReady,
+    clarificationActive: waitingForCaseClarification,
+    /* The app shell only renders the timeline while screens 1-5 are up
+       (screen 6 renders its own) — CadModelView fills the CAD sub-state
+       fields from Forge itself there. cadSelectionMade/roundState
+       are the real values reported up from CadModelView so the markers
+       stay accurate from the conversation too. */
+    cadStep: CAD_SCREEN,
+    cadSelectionMade,
+    afterCadRunExists: hasAfterCadRun,
+    roundState,
+  };
+  const { states: stepStates, reasons: stepReasons } = timelineStepStates(
+    timelineState,
+    screen,
+  );
+
+  function handleTimelineStep(step: number) {
+    const action = stepNav(timelineState, step);
+    if (action.kind !== "navigate") return;
+    /* Leaving CAD dismisses the handoff so the auto-advance doesn't drag
+       the user straight back into the CAD workspace. */
+    if (screen === CAD_SCREEN && action.target < CAD_SCREEN) {
+      setHandoffDismissed(true);
+    }
+    /* Marker 5 into the CAD screen arms the variant-picker entry intent;
+       any other navigation arms nothing (disarming a pending intent). */
+    setPickerEntryArmed(
+      step === CAD_SUBSTEP_PICKER && action.target === CAD_SCREEN,
+    );
+    if (action.target === 2) intake.openAnnotationScreen();
+    setScreen(action.target);
+  }
+
+  /* Return to the conversation from the CAD workspace; same dismissal
+     as handleTimelineStep so the demo flags are not duplicated below. */
+  function handleBackToChat() {
+    if (screen !== CAD_SCREEN) return;
+    setHandoffDismissed(true);
+    setPickerEntryArmed(false);
+    setScreen(CHAT_SCREEN);
   }
 
   // ── Bootstrap + sync effects ────────────────────────────────────────────
@@ -166,7 +261,8 @@ export default function RepairCADApp() {
 
     listRunsRef.current().then((existing) => {
       if (existing !== null && existing.length === 0) {
-        createRunRef.current()
+        createRunRef
+          .current()
           .then((created) => {
             registerLiveRun(created._id);
             setScreen(1);
@@ -218,6 +314,13 @@ export default function RepairCADApp() {
 
   // ── Handlers ────────────────────────────────────────────────────────────
 
+  function handleToAllRuns() {
+    /* Drop the active run and request the list; the list reloads itself
+       whenever the derived screen lands there. */
+    clearRun();
+    setScreen(RUN_LIST);
+  }
+
   async function handleCreateRun() {
     try {
       const created = await createRun();
@@ -239,10 +342,8 @@ export default function RepairCADApp() {
       return next;
     });
     try {
-      const {
-        messages: loadedMessages,
-        run: loadedRun,
-      } = await selectRun(selectedRunId);
+      const { messages: loadedMessages, run: loadedRun } =
+        await selectRun(selectedRunId);
       // Clear any earlier dismissal so a completed run still auto-advances.
       setHandoffDismissed(false);
       // Fresh runs are seeded with one assistant greeting, so "no user turn
@@ -251,13 +352,11 @@ export default function RepairCADApp() {
       // partial (legacy docs, hiccup) must not dump a progressed run back
       // into intake — runningDoc/status carry the progress signal too.
       setScreen(screenForSelectedRun(loadedRun, loadedMessages));
+      // A run switch starts from the run's own entry — no picker intent.
+      setPickerEntryArmed(false);
     } catch {
       // Error handled in hook; stay on the list.
     }
-  }
-
-  function handleViewRuns() {
-    setScreen(RUN_LIST);
   }
 
   async function handleLogout() {
@@ -268,7 +367,9 @@ export default function RepairCADApp() {
   const [clarificationSubmitting, setClarificationSubmitting] = useState(false);
   const [clarificationError, setClarificationError] = useState("");
 
-  async function handleSubmit(annotatedCopies: Record<string, { file: File; url: string }>) {
+  async function handleSubmit(
+    annotatedCopies: Record<string, { file: File; url: string }>,
+  ) {
     const intakeMessage = buildIntakeMessage({
       description: intake.description,
       photos: intake.photos,
@@ -300,10 +401,9 @@ export default function RepairCADApp() {
         clarification.annotations as never,
       );
       const message =
-        [
-          clarification.content.trim(),
-          ...annotationLines,
-        ].filter(Boolean).join("\n\n") ||
+        [clarification.content.trim(), ...annotationLines]
+          .filter(Boolean)
+          .join("\n\n") ||
         "I have attached the requested clarification photos.";
       await submitClarification({
         message,
@@ -328,8 +428,8 @@ export default function RepairCADApp() {
     return null;
   }
 
-  const activeRunId = runId ?? run?._id ?? null;
-  const shouldAutoGenerate = activeRunId !== null && liveRunIds.has(activeRunId);
+  const shouldAutoGenerate =
+    activeRunId !== null && liveRunIds.has(activeRunId);
 
   if (screen === RUN_LIST) {
     return (
@@ -341,6 +441,7 @@ export default function RepairCADApp() {
         createError={createError}
         selecting={selectingRun}
         selectError={selectError}
+        s2NodeId={s2NodeIdValue}
         onCreateRun={handleCreateRun}
         onSelectRun={handleSelectRun}
         onLogout={handleLogout}
@@ -356,56 +457,29 @@ export default function RepairCADApp() {
         photos={intake.photos}
         onAddPhotos={intake.addPhotos}
         onRemovePhoto={intake.removePhoto}
+        onStepClick={handleTimelineStep}
+        clickStates={stepStates}
+        reasons={stepReasons}
         onContinue={() => {
           intake.openAnnotationScreen();
           setScreen(2);
         }}
-        onNewRun={handleCreateRun}
-        onViewRuns={handleViewRuns}
-        onLogout={handleLogout}
+        onAllRuns={handleToAllRuns}
       />
     );
   }
 
   if (screen === 2) {
     return (
-      <AppShell>
-        <Card className="!max-w-[1600px] !px-10">
-          <AppHeader />
-
-          <RepairProgress currentStep={2} />
-
-          <h1>Annotate your photos</h1>
-
-          <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
-            Mark important parts of the photo and briefly describe what they show
-            or why they matter for the repair.
-          </p>
-
-          <PhotoAnnotation intake={intake} withSizeReference />
-
-          {intake.photos.length > 0 && !intake.hasMeasurementReference && (
-            <p className="mt-6 -mb-3 text-right text-sm text-[#a05a00]">
-              Mark at least one annotation as a size reference (with its known
-              dimension) to continue.
-            </p>
-          )}
-
-          <div className="mt-9 flex justify-between gap-4 max-[640px]:flex-col-reverse max-[640px]:[&>button]:w-full">
-            <button type="button" className="btn-secondary" onClick={() => setScreen(1)}>
-              ← Back
-            </button>
-
-            <button
-              type="button"
-              disabled={!intake.hasMeasurementReference}
-              onClick={() => setScreen(3)}
-            >
-              Review →
-            </button>
-          </div>
-        </Card>
-      </AppShell>
+      <AnnotatePhotos
+        intake={intake}
+        onBack={() => setScreen(1)}
+        onContinue={() => setScreen(3)}
+        onAllRuns={handleToAllRuns}
+        onStepClick={handleTimelineStep}
+        clickStates={stepStates}
+        reasons={stepReasons}
+      />
     );
   }
 
@@ -416,6 +490,10 @@ export default function RepairCADApp() {
         photos={intake.photos}
         annotations={intake.annotations}
         onBack={() => setScreen(2)}
+        onAllRuns={handleToAllRuns}
+        onStepClick={handleTimelineStep}
+        clickStates={stepStates}
+        reasons={stepReasons}
         onSubmit={handleSubmit}
         submitting={submitting}
         submissionError={submissionError}
@@ -424,60 +502,19 @@ export default function RepairCADApp() {
   }
 
   if (screen === CHAT_SCREEN) {
-    /*
-      One page, two states:
-      - While the pipeline sends the case back for clarification there is no
-        conversation to follow — the last assistant question is shown as a
-        focused card next to the response form instead of the full transcript.
-      - Otherwise the whole conversation embed fills the page, with its own
-        header actions and its own scrolling transcript.
-      Both states are locked to the viewport height (no page scrollbar).
-    */
-    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-    const lastQuestion = describeMessageContent(lastAssistant?.content);
-
     return (
-      <div className="flex h-dvh flex-col overflow-hidden">
-        <div className="shrink-0 px-6 pb-4 pt-4 max-[640px]:px-5">
-          <RepairProgress currentStep={4} flush />
-        </div>
-
-        {waitingForCaseClarification ? (
-          <div className="flex min-h-0 flex-1 justify-center overflow-y-auto overscroll-contain px-6 pb-4 max-[640px]:px-4">
-            <div className="max-h-full w-full max-w-[860px]">
-              <div className="rounded-2xl border border-line bg-white p-6 shadow-[0_1px_3px_rgba(16,24,40,0.06)] max-[640px]:p-4">
-                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                  <div className="text-lg font-bold">Repair clarification</div>
-                  <FlowChatActions
-                    onLogout={handleLogout}
-                    onNewRun={handleCreateRun}
-                    onViewRuns={handleViewRuns}
-                  />
-                </div>
-
-                <CaseClarification
-                  question={lastQuestion}
-                  embedded
-                  onSubmit={handleClarificationSubmit}
-                  submitting={clarificationSubmitting}
-                  error={clarificationError}
-                />
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="flex min-h-0 flex-1 flex-col px-6 pb-4">
-            <FlowChatEmbed
-              runId={activeRunId}
-              onLogout={handleLogout}
-              onNewRun={handleCreateRun}
-              onViewRuns={handleViewRuns}
-              onOpenCad={() => setScreen(CAD_SCREEN)}
-              cadReady={currentHandoffReady}
-            />
-          </div>
-        )}
-      </div>
+      <ChatScreen
+        runId={activeRunId}
+        messages={messages}
+        waitingForCaseClarification={waitingForCaseClarification}
+        clarificationSubmitting={clarificationSubmitting}
+        clarificationError={clarificationError}
+        onAllRuns={handleToAllRuns}
+        onStepClick={handleTimelineStep}
+        clickStates={stepStates}
+        reasons={stepReasons}
+        onClarificationSubmit={handleClarificationSubmit}
+      />
     );
   }
 
@@ -486,14 +523,13 @@ export default function RepairCADApp() {
       <CadModelView
         handoffs={handoffs}
         runId={activeRunId}
+        fabricationDesignIntent={runningDoc?.fabrication_design_intent}
         shouldAutoGenerate={shouldAutoGenerate}
-        onBack={() => {
-          setHandoffDismissed(true);
-          setScreen(CHAT_SCREEN);
-        }}
-        onNewRun={handleCreateRun}
-        onViewRuns={handleViewRuns}
-        onLogout={handleLogout}
+        onAllRuns={handleToAllRuns}
+        onBackToChat={handleBackToChat}
+        onCadStateChange={handleCadStateChange}
+        openPickerOnEntry={pickerEntryArmed}
+        onOpenPickerOnEntryConsumed={() => setPickerEntryArmed(false)}
       />
     );
   }

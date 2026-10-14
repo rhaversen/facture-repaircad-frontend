@@ -13,7 +13,7 @@ import { Timer } from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import * as THREE from "three";
 
-import type { DesignVariant, ForgeIteration, GlbModel, Guide } from "@/lib/types";
+import type { DesignVariant, GlbModel, Guide } from "@/lib/types";
 import { createGuidesOverlay, type GuidesOverlay } from "./guides";
 
 /*
@@ -127,6 +127,12 @@ function ForgeStudio({
     // the whole scene fits regardless of light distance.
     cam.far = sphere.radius * 4 + light.position.length();
     cam.updateProjectionMatrix();
+    const center = box.getCenter(new THREE.Vector3());
+    // Imperative three.js mutation during a layout effect is intentional.
+     
+    light.target.position.copy(center);
+    light.target.updateMatrixWorld();
+     
     light.shadow.needsUpdate = true;
   }, [fitKey, fitModel]);
 
@@ -197,9 +203,10 @@ function LoadingSpinner() {
 }
 
 /*
-  Display-space bounds of a decoded Forge mesh, with the Z-up correction
-  applied. The radius sets camera fit distances; the center is where the
-  model's visual middle sits.
+  Display-space bounds of a decoded Forge mesh. The backend's GLB root node
+  pre-applies the Z-up → Y-up rotation, so the parsed scene is already in
+  display space and the bounds read straight off it. The radius sets camera
+  fit distances; the center is where the model's visual middle sits.
 */
 export function meshDisplayBounds(scene: THREE.Object3D) {
   scene.updateWorldMatrix(true, true);
@@ -221,7 +228,6 @@ export function meshDisplayBounds(scene: THREE.Object3D) {
     }
   });
   if (!hasGeometry || localBox.isEmpty()) return null;
-  localBox.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
   const sphere = localBox.getBoundingSphere(new THREE.Sphere());
   if (!isFinite(sphere.radius) || sphere.radius <= 0) return null;
   return {
@@ -231,9 +237,11 @@ export function meshDisplayBounds(scene: THREE.Object3D) {
 }
 
 /*
-  One-shot camera framing per design: when the model first appears, aim
+  Camera framing per model instance: when a model first appears, aim
   OrbitControls at the model's displayed centre and pull the camera back to a
-  comfortable three-quarter view slightly above it. Runs once per fitKey.
+  comfortable three-quarter view slightly above it. Every *new* model — e.g.
+  the geometry after a parameter rebuild — re-runs the fit, so a rebuild that
+  shifted the bounds still lands mid-viewport.
 */
 function CameraFit({
   fitKey,
@@ -242,24 +250,33 @@ function CameraFit({
   fitKey: string | null;
   model: GlbModel | null;
 }) {
-  const camera = useThree((state) => state.camera);
+  const camera = useThree((state) => state.camera) as THREE.PerspectiveCamera;
   const controls = useThree((state) => state.controls) as
     | (THREE.EventDispatcher & { target: THREE.Vector3; update: () => void })
     | null;
-  const fittedKeyRef = useRef<string | null>(null);
+  const fittedRef = useRef<GlbModel | null>(null);
 
   // Imperative three.js camera/controls mutation is intentional here.
   /* eslint-disable react-hooks/immutability */
   useEffect(() => {
-    if (!model || fitKey === null || fittedKeyRef.current === fitKey) return;
-    if (!controls) return;
+    if (!model || fitKey === null || !controls) return;
+    if (fittedRef.current === model) return;
     const bounds = meshDisplayBounds(model.scene);
     if (bounds === null) return;
-    fittedKeyRef.current = fitKey;
+    fittedRef.current = model;
 
-    const dist = (bounds.radius / Math.sin((((camera as THREE.PerspectiveCamera).fov / 2) * Math.PI) / 180)) * 1.6;
+    // Fit against the narrower side of the frame: on a non-square pane the
+    // horizontal fov is smaller than the vertical one, and the bounds radius
+    // must clear that tighter angle or the model's edges leave the viewport.
+    const vHalf = ((camera.fov / 2) * Math.PI) / 180;
+    const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+    const dist = (bounds.radius / Math.sin(Math.min(vHalf, hHalf))) * 1.6;
 
-    const target = new THREE.Vector3(0, 0, 0);
+    // OrbitControls look at the world origin by default, but a model whose
+    // geometry is authored off-origin would sit above/below the viewport.
+    // Aim at the model's own bounds centre so it always lands mid-viewport;
+    // clone so controls don't alias the bounds object's vector.
+    const target = bounds.center.clone();
     const dir = new THREE.Vector3(1, 0.55, 1.3).normalize();
 
     camera.position.copy(target).addScaledVector(dir, dist);
@@ -275,33 +292,165 @@ function CameraFit({
   return null;
 }
 
+/** One-shot guide reframe request: display-space frame centre + radius, and
+ *  a monotonically increasing nonce so repeat clicks on the same param
+ *  re-trigger the camera move (an equal nonce is treated as already
+ *  applied). */
+export interface GuideFrameRequest {
+	center: [number, number, number];
+	radius: number;
+	nonce: number;
+}
+
+/* Seconds for the eased glide between guide frame positions. */
+const GUIDE_FRAME_DURATION_MS = 900;
+function easeInOutCubic(t: number) {
+	return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+/*
+  Guide framing: camera, guide and world origin sit collinear — the
+  camera stays on the far side of the guide, looking through it
+  toward the origin. The distance starts at whatever is needed for
+  the guide's frame sphere to fit, floored at half the distance that
+  fits the whole model (the auto position can never zoom closer than
+  that). Every move eases from the camera's current position, so a
+  click mid-glide retargets from wherever the camera is; a user drag
+  cancels the glide and OrbitControls resumes from the hand-off.
+  Runs once per nonce — and only when the makeDefault OrbitControls
+  exist, which they may not on the very first tick after a canvas
+  mount, hence the deferred guard below.
+*/
+function GuideReframe({
+	frame,
+	model,
+}: {
+	frame: GuideFrameRequest | null;
+	model: GlbModel | null;
+}) {
+	const camera = useThree((state) => state.camera) as THREE.PerspectiveCamera;
+	const controls = useThree((state) => state.controls) as
+		| (THREE.EventDispatcher & {
+				target: THREE.Vector3;
+				update: () => void;
+			})
+		| null;
+	const appliedNonce = useRef<number | null>(null);
+	const glide = useRef<{
+		fromPos: THREE.Vector3;
+		fromTarget: THREE.Vector3;
+		toPos: THREE.Vector3;
+		toTarget: THREE.Vector3;
+		start: number;
+	} | null>(null);
+
+	// Imperative three.js camera/controls mutation is intentional here.
+	/* eslint-disable react-hooks/immutability */
+	useEffect(() => {
+		if (frame === null) {
+			appliedNonce.current = null;
+			glide.current = null;
+			return;
+		}
+		if (!controls || appliedNonce.current === frame.nonce) return;
+		appliedNonce.current = frame.nonce;
+
+		const center = new THREE.Vector3(...frame.center);
+		const u =
+			center.lengthSq() > 1e-12
+				? center.clone().normalize()
+				: new THREE.Vector3(1, 0.55, 1.3).normalize();
+
+		const vHalf = ((camera.fov / 2) * Math.PI) / 180;
+		const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+		const half = Math.min(vHalf, hHalf);
+		let distance = (frame.radius / Math.sin(half)) * 1.4;
+		if (model !== null) {
+			const bounds = meshDisplayBounds(model.scene);
+			if (bounds !== null) {
+				// CameraFit frames the whole model both pivot-relative and
+				// limit-relative; halving that distance is the max zoom-in
+				// the auto position may reach.
+				const wholeModel = (bounds.radius / Math.sin(half)) * 1.6;
+				distance = Math.max(distance, wholeModel / 2);
+			}
+		}
+
+		const toPos = center.clone().addScaledVector(u, distance);
+		const toTarget = center.clone();
+		camera.near = Math.max(0.01, distance / 500);
+		camera.far = Math.max(500, (distance + center.length()) * 20);
+		camera.updateProjectionMatrix();
+
+		// Rebase from the live position so an interrupted glide or a
+		// manual orbit never jumps.
+		glide.current = {
+			fromPos: camera.position.clone(),
+			fromTarget: controls.target.clone(),
+			toPos,
+			toTarget,
+			start: performance.now(),
+		};
+	}, [frame, camera, controls, model]);
+
+	useEffect(() => {
+		if (controls === null) return;
+		const dispatcher = controls as unknown as {
+			addEventListener(type: string, handler: () => void): void;
+			removeEventListener(type: string, handler: () => void): void;
+		};
+		const cancel = () => {
+			glide.current = null;
+		};
+		dispatcher.addEventListener("start", cancel);
+		return () => {
+			dispatcher.removeEventListener("start", cancel);
+		};
+	}, [controls]);
+
+	useFrame(() => {
+		const active = glide.current;
+		if (active === null || controls === null) return;
+		const t = Math.min(
+			1,
+			(performance.now() - active.start) / GUIDE_FRAME_DURATION_MS,
+		);
+		const k = easeInOutCubic(t);
+		camera.position.lerpVectors(active.fromPos, active.toPos, k);
+		controls.target.lerpVectors(active.fromTarget, active.toTarget, k);
+		controls.update();
+		if (t >= 1) glide.current = null;
+	});
+	/* eslint-enable react-hooks/immutability */
+
+	return null;
+}
+
 /** Parametric guides rendered over the model: the backend sources the guide
  *  geometry from the same dimensions the parameters control, so the lines
- *  always agree with the current revision. Visibility is baseline
- *  show-all plus a hovered parameter override — hiding/revealing is a
- *  per-line `.visible` + material swap on the already-built overlay, so
- *  hover needs no rebuild. */
+ *  always agree with the current revision. Visibility is single
+ *  selection — exactly one parameter's guides (or none) — a per-line
+ *  `.visible` + material state on the already-built overlay, so a
+ *  selection change needs no rebuild. */
 function Guides({
   guides,
   designId,
   model,
   visible,
-  hoveredParam,
 }: {
   guides: Guide[];
   designId: string | null;
   model: GlbModel | null;
   visible: (name: string) => boolean;
-  hoveredParam: string | null;
 }) {
   const scene = useThree((state) => state.scene);
   const camera = useThree((state) => state.camera) as THREE.PerspectiveCamera;
   const viewportHeight = useThree((state) => state.size.height);
   const overlayRef = useRef<GuidesOverlay | null>(null);
   const visibleRef = useRef(visible);
-  visibleRef.current = visible;
-  const hoveredRef = useRef(hoveredParam);
-  hoveredRef.current = hoveredParam;
+  useEffect(() => {
+    visibleRef.current = visible;
+  }, [visible]);
 
   useEffect(() => {
     if (scene === null) return;
@@ -319,18 +468,13 @@ function Guides({
     overlayRef.current?.setGuides(guides);
   }, [guides, designId, model]);
 
-  // Hover and per-param toggles never rebuild the overlay; they only flip
-  // visibility and swap to the brighter hover material.
+  // Selection changes never rebuild the overlay; they only flip line
+  // visibility and swap to the selected (brighter) material.
   useEffect(() => {
     const overlay = overlayRef.current;
     if (overlay === null) return;
-    const visibleBase = visibleRef.current;
-    const hovered = hoveredRef.current;
-    overlay.refresh({
-      hoveredParam: hovered,
-      visible: (param) => visibleBase(param) || hovered === param,
-    });
-  }, [guides, hoveredParam, visible, model]);
+    overlay.refresh({ visible: visibleRef.current });
+  }, [guides, visible, model]);
 
   // Guides are sized in screen pixels — rescale every frame against the
   // live camera so they stay a constant pixel size at any zoom.
@@ -349,7 +493,7 @@ export function CadCanvas({
   designId,
   guides,
   guideVisible,
-  hoveredGuideParam,
+  guideFrame = null,
 }: {
   children: React.ReactNode;
   generating: boolean;
@@ -358,7 +502,8 @@ export function CadCanvas({
   designId?: string | null;
   guides?: Guide[];
   guideVisible?: (name: string) => boolean;
-  hoveredGuideParam?: string | null;
+  /** Reframe the camera on a param's guide (Option B — see GuideReframe). */
+  guideFrame?: GuideFrameRequest | null;
 }) {
   const model = fitModel;
   return (
@@ -372,13 +517,13 @@ export function CadCanvas({
         <ForgeStudio fitKey={fitKey} fitModel={fitModel} />
         <Suspense fallback={generating ? <LoadingSpinner /> : null}>{children}</Suspense>
         <CameraFit fitKey={fitKey} model={model} />
+        <GuideReframe frame={guideFrame} model={model} />
         {guides !== undefined ? (
           <Guides
             guides={guides}
             designId={designId ?? model?.scene.name ?? null}
             model={model}
             visible={guideVisible ?? (() => true)}
-            hoveredParam={hoveredGuideParam ?? null}
           />
         ) : null}
         <OrbitControls makeDefault enableDamping dampingFactor={0.1} minDistance={0.001} maxDistance={Infinity} />
@@ -492,16 +637,17 @@ function PickerModel({
 
 export function DesignPicker({
   variants,
-  iterations = [],
-  onSelect,
+  selectedId,
+  onSelected,
 }: {
   variants: DesignVariant[];
-  iterations?: ForgeIteration[];
-  onSelect?: (designId: string) => void;
+  /** The tile the user has "Select"ed, if any (parent-owned state). */
+  selectedId: string | null;
+  /** A tile's Select was clicked. Selection alone; the parent renders the
+     pinned Continue button that commits the pick. */
+  onSelected: (designId: string) => void;
 }) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [page, setPage] = useState(0);
-  const [historyOpen, setHistoryOpen] = useState(false);
 
   const pageCount = Math.max(1, Math.ceil(variants.length / PICKER_PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
@@ -526,15 +672,6 @@ export function DesignPicker({
     [variants],
   );
 
-  /* Hide the in-progress round: its entry only exists once the user picks,
-     so the newest completed iteration is always a settled past round. */
-  const previousIterations = useMemo(
-    () =>
-      iterations.filter(
-        (iteration) => !variants.some((v) => v.designId === iteration.pickedDesignId),
-      ),
-    [iterations, variants],
-  );
   const fitRadius = useMemo(() => {
     let radius = 0;
     for (const bounds of variantBounds) {
@@ -597,13 +734,6 @@ export function DesignPicker({
 
   return (
     <div className="flex flex-col gap-4">
-      {previousIterations.length > 0 && (
-        <IterationTimeline
-          iterations={previousIterations}
-          open={historyOpen}
-          onToggle={() => setHistoryOpen((prev) => !prev)}
-        />
-      )}
       <div className="grid grid-cols-[repeat(2,minmax(0,1fr))] gap-4 max-[900px]:grid-cols-1">
         {variants.map((variant, index) => {
           const visible = visibleIds.has(variant.designId);
@@ -619,11 +749,7 @@ export function DesignPicker({
               }`}
               style={visible ? undefined : { display: "none" }}
             >
-              <div
-                className={`relative h-[380px] overflow-hidden rounded-lg border border-line-soft bg-white max-[900px]:h-[320px] ${
-                  variant.status === "preview" ? "opacity-35 grayscale-[0.8]" : ""
-                }`}
-              >
+              <div className="relative h-[380px] overflow-hidden rounded-lg border border-line-soft bg-white max-[900px]:h-[320px]">
                 {bounds !== null ? (
                   <CanvasErrorBoundary>
                     <Canvas
@@ -673,14 +799,20 @@ export function DesignPicker({
                   type="button"
                   className={`rounded-lg border px-3 py-1 text-[13px] ${
                     selected
-                      ? "border-brand bg-brand text-white"
-                      : "border-[#d5d9e0] bg-white text-muted hover:border-brand hover:text-brand"
+                      ? "cursor-default border-brand bg-brand text-white"
+                      : variant.mesh === null || variant.status !== "ready"
+                        ? "cursor-not-allowed border-[#d5d9e0] bg-white text-muted opacity-50"
+                        : "border-[#d5d9e0] bg-white text-muted hover:border-brand hover:text-brand"
                   }`}
-                  disabled={variant.mesh === null || variant.status !== "ready"}
-                  onClick={() => {
-                    setSelectedId(variant.designId);
-                    onSelect?.(variant.designId);
-                  }}
+                  disabled={
+                    variant.mesh === null ||
+                    variant.status !== "ready" ||
+                    selected
+                  }
+                  // A selection is locked once made; switching to another
+                  // design means clicking that tile. The Continue button
+                  // below is the only way out of the picker.
+                  onClick={() => onSelected(variant.designId)}
                 >
                   {variant.status !== "ready"
                     ? "Generating…"
@@ -721,77 +853,3 @@ export function DesignPicker({
   );
 }
 
-/* Timeline of completed feedback rounds. Each entry shows the round number,
-   the feedback that shaped it, the carried-forward source, and which copy was
-   picked out of the round's candidates. */
-function IterationTimeline({
-  iterations,
-  open,
-  onToggle,
-}: {
-  iterations: ForgeIteration[];
-  open: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <div className="rounded-xl border border-line-soft bg-surface">
-      <button
-        type="button"
-        className="flex w-full items-center justify-between gap-3 px-5 py-3 text-left"
-        onClick={onToggle}
-      >
-        <span className="text-[15px] font-semibold text-ink">
-          Iteration history ({iterations.length}{" "}
-          {iterations.length === 1 ? "round" : "rounds"})
-        </span>
-        <span className="text-sm text-muted">{open ? "Hide ▲" : "Show ▼"}</span>
-      </button>
-      {open && (
-        <ol className="flex flex-col gap-3 border-t border-line-soft px-5 py-4">
-          {iterations.map((iteration) => {
-            const roundNumber = iteration.round;
-            const variantIndex =
-              iteration.variantIds.indexOf(iteration.pickedDesignId ?? "");
-            return (
-              <li
-                key={iteration.round}
-                className="flex flex-col gap-1.5 rounded-lg border border-line-soft bg-white px-4 py-3"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-brand/10 px-2.5 py-0.5 text-[12px] font-semibold text-brand">
-                    Round {roundNumber}
-                  </span>
-                  {iteration.feedback === null ? (
-                    <span className="text-[12px] text-muted">
-                      Initial generation
-                    </span>
-                  ) : (
-                    <span className="text-[13px] text-ink">
-                      “{iteration.feedback}”
-                    </span>
-                  )}
-                </div>
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted">
-                  <span>
-                    Carried forward: design {iteration.sourceDesignId.slice(0, 8)}
-                  </span>
-                  <span>
-                    Candidates: {iteration.variantIds.length}{" "}
-                    {iteration.variantIds.length === 1 ? "copy" : "copies"}
-                  </span>
-                  {iteration.pickedDesignId !== undefined && (
-                    <span>
-                      Picked: design {iteration.pickedDesignId.slice(0, 8)}
-                      {variantIndex >= 0 ? ` (#${variantIndex + 1})` : ""}
-                      <span className="ml-1 text-brand">✓</span>
-                    </span>
-                  )}
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-      )}
-    </div>
-  );
-}

@@ -27,10 +27,12 @@ async function poll(
 
 /*
   Unit tests for the variant selection flow under the simplified store model:
-  each run entry is { designId, phase, variantDesignIds }, with no iteration
-  lineage and no per-design handoff. The picker is re-openable at any time
-  from the stored candidate ids. All Forge client calls are mocked; SSE
-  streams are emulated with ReadableStream responses.
+  each run entry is { designId, phase, variantDesignIds, variantHandoffs,
+  handoffIndex }, with no iteration lineage. The picker is re-openable at any
+  time from the stored candidate ids, and the stored handoff index keeps the
+  refinement bootstrap pointed at the chosen variant's brief. All Forge
+  client calls are mocked; SSE streams are emulated with ReadableStream
+  responses.
 */
 
 vi.mock("@/lib/forgeClient", async (importOriginal) => {
@@ -208,7 +210,7 @@ describe("useForge variant selection", () => {
     }
   });
 
-  it("stores the run as { designId, phase, variantDesignIds } and never a history", async () => {
+  it("stores the run as { designId, phase, variantDesignIds, variantHandoffs, handoffIndex } and never a history", async () => {
     mockSuccessfulGeneration();
     const { result } = renderHook(() => useForge());
 
@@ -217,12 +219,13 @@ describe("useForge variant selection", () => {
       parked = result.current.generate({ handoffs: HANDOFFS, runId: "run-2" });
     });
     await poll(() => result.current.phase === "choosing");
-    // While choosing, the entry carries only the candidate ids + phase.
+    // While choosing, the entry carries the candidate ids, their handoff
+    // pairing and the phase — and nothing else.
     const choosingEntry = storedEntry("run-2");
     expect(choosingEntry).toEqual({
-      designId: undefined,
       phase: "choosing",
       variantDesignIds: expect.arrayContaining(["id-1", "id-2", "id-3"]),
+      variantHandoffs: expect.objectContaining({ "id-3": 2 }),
     });
     expect(Object.keys(choosingEntry)).not.toContain("iterations");
     expect(Object.keys(choosingEntry)).not.toContain("selectedHandoff");
@@ -236,11 +239,14 @@ describe("useForge variant selection", () => {
     );
 
     expect(result.current.designId).toBe("id-3");
-    // The pick overwrites the single selection field; the candidate list is
-    // kept forever so the picker can be reopened.
+    // The pick overwrites the single selection field; the candidate list
+    // (and its handoff pairing) is kept so the picker can be reopened and
+    // the refinement bootstrap can seed the chosen variant's brief.
     const stored = loadStoredDesignState("run-2");
     expect(stored?.designId).toBe("id-3");
+    expect(stored?.phase).toBe("ready");
     expect(stored?.variantDesignIds).toEqual(["id-1", "id-2", "id-3"]);
+    expect(stored?.variantHandoffs?.["id-3"]).toBe(2);
     expect(stored).not.toHaveProperty("iterations");
     expect(stored).not.toHaveProperty("selectedHandoff");
   });

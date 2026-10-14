@@ -30,15 +30,19 @@ function extractDesignId(text: string): string | null {
   was cleared. The refinement run's bootstrap message (persisted in the Flow
   transcript) embeds both the originating handoff document and the design id,
   so the design a run produced can be found by matching the handoff text.
-  Returns the newest matching design id, or null when nothing matches.
+  The bootstrap seeds the picked variant's handoff, so every supplied
+  handoff is tried as a needle. Returns the newest match with the handoff
+  index it came from, or null when nothing matches.
 */
 export async function recoverDesignIdForRun({
-  handoffMarkdown,
+  handoffs,
 }: {
-  handoffMarkdown: string;
-}): Promise<string | null> {
-  const needle = handoffMarkdown?.trim();
-  if (!needle) return null;
+  handoffs: string[];
+}): Promise<{ designId: string; handoffIndex: number } | null> {
+  const needles = handoffs
+    .map((markdown, index) => ({ markdown: markdown.trim(), index }))
+    .filter((entry) => entry.markdown !== "");
+  if (needles.length === 0) return null;
 
   let runs;
   try {
@@ -52,7 +56,7 @@ export async function recoverDesignIdForRun({
     return null;
   }
 
-  // Newest first — the latest refinement run for this handoff is the
+  // Newest first — the latest refinement run across all variants is the
   // authoritative design the user was last working with.
   runs.sort((a, b) =>
     String(b?.createdAt ?? "").localeCompare(String(a?.createdAt ?? "")),
@@ -63,9 +67,13 @@ export async function recoverDesignIdForRun({
       const messages = await fetchMessages(candidate._id);
       for (const message of messages) {
         const text = messageText(message);
-        if (!text.includes(needle)) continue;
-        const designId = extractDesignId(text);
-        if (designId) return designId;
+        const matched = needles.find((n) => text.includes(n.markdown));
+        if (matched) {
+          const designId = extractDesignId(text);
+          if (designId) {
+            return { designId, handoffIndex: matched.index };
+          }
+        }
       }
     } catch (err) {
       // Unreadable run (deleted, forbidden) — keep scanning the rest.

@@ -20,6 +20,15 @@ export interface StoredDesignState {
   designId?: string;
   phase: string;
   variantDesignIds?: string[];
+  /**
+   * designId → index into the run's handoff document array. Generated for
+   * the picker run; the refinement bootstrap needs the picked variant's
+   * handoff, so a refresh/picker-reopen that had no explicit handoff falls
+   * back to `variantHandoffs[designId]` → index.
+   */
+  variantHandoffs?: Record<string, number>;
+  /** Index of the picked design's handoff (same space as variantHandoffs). */
+  handoffIndex?: number;
 }
 
 function readDesignStore(): Record<string, StoredDesignState> {
@@ -57,6 +66,25 @@ export function loadStoredDesignState(runId: string | null): StoredDesignState |
   ) {
     return null;
   }
+  if (
+    entry.variantHandoffs !== undefined &&
+    (typeof entry.variantHandoffs !== "object" ||
+        entry.variantHandoffs === null ||
+        Array.isArray(entry.variantHandoffs) ||
+        Object.values(entry.variantHandoffs).some(
+          (v) => typeof v !== "number" || !Number.isInteger(v) || v < 0,
+        ))
+    ) {
+      return null;
+    }
+  if (
+    entry.handoffIndex !== undefined &&
+    (typeof entry.handoffIndex !== "number" ||
+      !Number.isInteger(entry.handoffIndex) ||
+      entry.handoffIndex < 0)
+  ) {
+    return null;
+  }
   if (entry.phase === "choosing") {
     if (
       !Array.isArray(entry.variantDesignIds) ||
@@ -72,16 +100,34 @@ export function loadStoredDesignState(runId: string | null): StoredDesignState |
   return entry;
 }
 
+// Metadata written once a set of variants is known (their ids and the
+// handoff index each one was generated from) outlives phase updates the
+// same way the design id does — a later write must not drop it out of a
+// live entry.
+function storeSameRunVariants(
+  entry: StoredDesignState,
+  preserved?: StoredDesignState,
+): StoredDesignState {
+  let next = entry;
+  if (next.variantDesignIds === undefined && preserved?.variantDesignIds) {
+    next = { ...next, variantDesignIds: preserved.variantDesignIds };
+  }
+  if (next.variantHandoffs === undefined && preserved?.variantHandoffs) {
+    next = { ...next, variantHandoffs: preserved.variantHandoffs };
+  }
+  // handoffIndex follows the picked design across later phase writes (a
+  // refinement copy inherits its source design's handoff), so an entry that
+  // omits it keeps the previously stored one.
+  if (next.handoffIndex === undefined && preserved?.handoffIndex !== undefined) {
+    next = { ...next, handoffIndex: preserved.handoffIndex };
+  }
+  return next;
+}
+
 export function storeDesignState(runId: string | null, entry: StoredDesignState) {
   if (!runId) return;
   const store = readDesignStore();
-  // Variant ids are written once the candidates are known and kept forever
-  // after a pick — they are what lets the picker be reopened with the run's
-  // original candidates, so later phase writes must not drop them.
-  if (entry.variantDesignIds === undefined && store[runId]?.variantDesignIds) {
-    entry = { ...entry, variantDesignIds: store[runId].variantDesignIds };
-  }
-  store[runId] = entry;
+  store[runId] = storeSameRunVariants(entry, store[runId]);
   writeDesignStore(store);
 }
 

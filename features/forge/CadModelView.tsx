@@ -31,6 +31,12 @@ import { guideFrameBox } from "./guides";
 interface CadModelViewProps {
   handoffs: string[];
   runId: string | null;
+  /**
+   * Fabrication/design intent from the main run's running doc, forwarded
+   * into the refinement bootstrap so the setup stage records the upstream
+   * decisions (materials, decomposition, assembly) verbatim.
+   */
+  fabricationDesignIntent?: string;
   /*
     True when the run went through its whole pipeline inside this browsing
     session and the user came here straight from the chat: the models then
@@ -64,6 +70,7 @@ interface CadModelViewProps {
 export default function CadModelView({
   handoffs,
   runId,
+  fabricationDesignIntent,
   shouldAutoGenerate = false,
   onAllRuns,
   onBackToChat,
@@ -92,6 +99,7 @@ export default function CadModelView({
     confirmParamValue,
     finishCalibration,
     reset,
+    handoffIndex,
   } = forge;
 
   /*
@@ -132,17 +140,44 @@ export default function CadModelView({
     exists. The designId guard makes the run create with the chosen
     design on first entry.
   */
+  /*
+    Seed the run with the handoff of the variant the user picked, not
+    always handoffs[0]: the Forge agent's persistent refinement state
+    records strategy / constraints from the first AI message, so
+    bootstrapping against the wrong handoff's repair brief poisons
+    every later refinement for the run. `handoffIndex` is null when the
+    pairing is unknown (transcript recovery, pre-refactor stores) and
+    out-of-range defensively; both fall back to the first handoff.
+  */
+  const bootstrapHandoffIndex =
+    typeof handoffIndex === "number" &&
+    handoffIndex >= 0 &&
+    handoffIndex < handoffs.length
+      ? handoffIndex
+      : 0;
+  const bootstrapHandoff = handoffs[bootstrapHandoffIndex] ?? "";
+  const bootstrapHandoffVariant = `forge_handoff_${bootstrapHandoffIndex + 1}`;
+
   // Depend on the handoff text, not the `handoffs` array: the app shell
   // rebuilds that array (via collectHandoffs) on every poll re-render, and a
   // fresh array reference re-runs this effect, re-invoking the bootstrap.
-  const bootstrapHandoff = handoffs[0] ?? "";
   useEffect(() => {
     if (!bootstrapHandoff.trim()) return;
     if (designId === null || !runId) return;
-    initializeRefinement(bootstrapHandoff, designId, runId).catch((err) => {
+    initializeRefinement(bootstrapHandoff, designId, runId, {
+      designIntent: fabricationDesignIntent,
+      handoffVariant: bootstrapHandoffVariant,
+    }).catch((err) => {
       console.error("Could not start refinement conversation:", err);
     });
-  }, [bootstrapHandoff, designId, runId, initializeRefinement]);
+  }, [
+    bootstrapHandoff,
+    bootstrapHandoffVariant,
+    designId,
+    runId,
+    initializeRefinement,
+    fabricationDesignIntent,
+  ]);
 
   // Keep the refinement run synchronized so forge_instruction / final_guidance
   // produced by R3 becomes visible to this component.

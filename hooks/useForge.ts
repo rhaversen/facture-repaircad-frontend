@@ -62,6 +62,11 @@ export function useForge() {
   // null when the last apply succeeded or no apply has run yet.
   const [buildReport, setBuildReport] = useState<string | null>(null);
   const [designId, setDesignId] = useState<string | null>(null);
+  // Index of the current design's handoff within the run's handoff array —
+  // the refinement bootstrap seeds the matching variant brief, not the
+  // first one; null when unknown (recovery path, pre-pick, refinement
+  // copies of unknown origin).
+  const [handoffIndex, setHandoffIndex] = useState<number | null>(null);
   const [variants, setVariants] = useState<
     { designId: string; mesh: GlbModel | null; status: "generating" | "ready"; error: string | null }[]
   >([]);
@@ -352,6 +357,7 @@ export function useForge() {
       setParameters([]);
       setVariants([]);
       setDesignId(null);
+      setHandoffIndex(null);
 
       try {
         /*
@@ -360,11 +366,17 @@ export function useForge() {
           later tiles fill in live. Picking resolves the park immediately.
         */
         const startedVariantIds: string[] = [];
-        const noteVariant = (variantId: string) => {
+        // Resolve order is not handoff order (parallel generation), so the
+        // design → handoff pairing is tracked explicitly — the refinement
+        // bootstrap must seed the handoff the picked variant came from.
+        const variantHandoffs: Record<string, number> = {};
+        const noteVariant = (variantIndex: number, variantId: string) => {
           startedVariantIds.push(variantId);
+          variantHandoffs[variantId] = variantIndex;
           if (runId) {
             storeDesignState(runId, {
               variantDesignIds: [...startedVariantIds],
+              variantHandoffs: { ...variantHandoffs },
               phase: "choosing",
             });
           }
@@ -406,7 +418,10 @@ export function useForge() {
         // Latest model per variant id, so a mid-stream pick can reuse the tile.
         const variantMeshes = new Map<string, GlbModel>();
 
-        const generateVariant = async (handoffMarkdown: string) => {
+        const generateVariant = async (
+          handoffMarkdown: string,
+          variantIndex: number,
+        ) => {
           const child = new AbortController();
           signal.addEventListener("abort", () => child.abort(), { once: true });
           childControllers.push(child);
@@ -415,7 +430,7 @@ export function useForge() {
           try {
             variantId = await createDesign();
             const tileId = variantId;
-            noteVariant(tileId);
+            noteVariant(variantIndex, tileId);
             activeVariantIdsRef.current.add(variantId);
             setVariants((prev) => [
               ...prev,
@@ -475,8 +490,8 @@ export function useForge() {
           }
         };
 
-        handoffs.map((handoffMarkdown) =>
-          generateVariant(handoffMarkdown).catch((reason) => {
+        handoffs.map((handoffMarkdown, variantIndex) =>
+          generateVariant(handoffMarkdown, variantIndex).catch((reason) => {
             console.warn("[Forge] initial variant failed:", reason);
           }),
         );
@@ -510,6 +525,9 @@ export function useForge() {
         // Phase 2: chosen design continues into calibration.
         setVariants([]);
         setDesignId(chosenId);
+        const chosenHandoffIndex =
+          variantHandoffs[chosenId ?? ""] ?? null;
+        setHandoffIndex(chosenHandoffIndex);
         // Reuse the tile's parsed model if it arrived; otherwise the
         // geometry load in the calibration phase provides the first render.
         const reused = variantMeshes.get(chosenId ?? "");
@@ -523,6 +541,9 @@ export function useForge() {
             designId: chosenId,
             phase: "calibrating",
             variantDesignIds: [...startedVariantIds],
+            variantHandoffs: { ...variantHandoffs },
+            handoffIndex:
+              chosenHandoffIndex !== null ? chosenHandoffIndex : undefined,
           });
         }
         if (chosenId === null) return;
@@ -536,7 +557,16 @@ export function useForge() {
         if (calibratable.length === 0) {
           setPhase("ready");
           if (runId) {
-            storeDesignState(runId, { designId: chosenId, phase: "ready" });
+            storeDesignState(runId, {
+              designId: chosenId,
+              phase: "ready",
+              variantDesignIds: [...startedVariantIds],
+              variantHandoffs: { ...variantHandoffs },
+              handoffIndex:
+                chosenHandoffIndex !== null
+                  ? chosenHandoffIndex
+                  : undefined,
+            });
           }
           return;
         }
@@ -864,6 +894,7 @@ export function useForge() {
       setVariants([]);
 
       try {
+        setHandoffIndex(null);
         const survivingIds = await rehydrateVariants({
           variantDesignIds: candidateIds,
           signal,
@@ -898,7 +929,14 @@ export function useForge() {
         // re-picked, so the design page simply comes back.
         const resolvedId = pickedId ?? designId;
         if (resolvedId === null) return designId;
+        const priorHandoffIndex =
+          designId === null ? null : (entry.handoffIndex ?? null);
+        const resolvedHandoffIndex =
+          pickedId !== null
+            ? (entry.variantHandoffs?.[pickedId] ?? null)
+            : priorHandoffIndex;
         setDesignId(resolvedId);
+        setHandoffIndex(resolvedHandoffIndex);
         await loadGeometry(resolvedId);
         if (signal.aborted) return designId;
         if (runId) {
@@ -906,6 +944,10 @@ export function useForge() {
             designId: resolvedId,
             phase: "calibrating",
             variantDesignIds: survivingIds,
+            handoffIndex:
+              resolvedHandoffIndex !== null
+                ? resolvedHandoffIndex
+                : undefined,
           });
         }
 
@@ -922,6 +964,10 @@ export function useForge() {
               designId: resolvedId,
               phase: "ready",
               variantDesignIds: survivingIds,
+              handoffIndex:
+                resolvedHandoffIndex !== null
+                  ? resolvedHandoffIndex
+                  : undefined,
             });
           }
           return resolvedId;
@@ -968,16 +1014,15 @@ export function useForge() {
 
       // Nothing in localStorage (cleared, new browser) — try to rebuild the
       // run → design mapping from the refinement run's persisted bootstrap
-      // message.
-      const recoveryHandoff = handoffs[0] ?? "";
-      if (stored === null && recoveryHandoff) {
-        const recoveredId = await recoverDesignIdForRun({
-          handoffMarkdown: recoveryHandoff,
-        });
-        if (recoveredId) {
+      // message. The bootstrap embeds the picked variant's handoff, so the
+      // recovery match also recovers that variant's handoff index.
+      if (stored === null) {
+        const recovered = await recoverDesignIdForRun({ handoffs });
+        if (recovered) {
           stored = {
-            designId: recoveredId,
+            designId: recovered.designId,
             phase: "ready",
+            handoffIndex: recovered.handoffIndex,
           };
           storeDesignState(runId, stored);
         }
@@ -1026,17 +1071,28 @@ export function useForge() {
           // Release the lock while parked on the user's pick.
           releaseBusy(lock);
 
-          targetDesignId =
-            (await new Promise<string | null>((resolve) => {
-              chooseResolverRef.current = resolve;
-            })) ?? undefined;
+          const pickedId = await new Promise<string | null>((resolve) => {
+            chooseResolverRef.current = resolve;
+          });
+          targetDesignId = pickedId ?? undefined;
           if (signal.aborted) return false;
           if (!acquireBusy(lock)) return false;
           setVariants([]);
+          // The restored picker resolves the pick's handoff from the
+          // pairing recorded at generation time.
+          setHandoffIndex(
+            pickedId !== null && targetDesignId
+              ? (stored.variantHandoffs?.[pickedId] ?? null)
+              : null,
+          );
           storeDesignState(runId, {
             designId: targetDesignId ?? undefined,
             phase: "calibrating",
             variantDesignIds: survivingIds,
+            handoffIndex:
+              targetDesignId !== undefined
+                ? (stored.variantHandoffs?.[targetDesignId] ?? undefined)
+                : undefined,
           });
         }
 
@@ -1052,6 +1108,7 @@ export function useForge() {
           return false;
         }
         setDesignId(targetDesignId);
+        setHandoffIndex(stored.handoffIndex ?? null);
 
         // A picked design is driven by the flow below, which stores its own
         // entries; normalize the entry in place so a legacy one written by
@@ -1061,6 +1118,8 @@ export function useForge() {
             designId: targetDesignId,
             phase: stored.phase,
             variantDesignIds: stored.variantDesignIds,
+            variantHandoffs: stored.variantHandoffs,
+            handoffIndex: stored.handoffIndex,
           });
         }
 
@@ -1199,7 +1258,12 @@ export function useForge() {
         setDesignId(copyId);
         setStatusMessage("");
         if (runId) {
-          storeDesignState(runId, { designId: copyId, phase: "calibrating" });
+          // The copy is built from the same handoff as its source.
+          storeDesignState(runId, {
+            designId: copyId,
+            phase: "calibrating",
+            handoffIndex: handoffIndex !== null ? handoffIndex : undefined,
+          });
         }
 
         setPhase("calibrating");
@@ -1211,7 +1275,11 @@ export function useForge() {
         if (calibratable.length === 0) {
           setPhase("ready");
           if (runId) {
-            storeDesignState(runId, { designId: copyId, phase: "ready" });
+            storeDesignState(runId, {
+              designId: copyId,
+              phase: "ready",
+              handoffIndex: handoffIndex !== null ? handoffIndex : undefined,
+            });
           }
           return;
         }
@@ -1236,7 +1304,14 @@ export function useForge() {
         releaseBusy(lock);
       }
     },
-    [designId, runCalibration, acquireBusy, releaseBusy, applyGeometry],
+    [
+      designId,
+      handoffIndex,
+      runCalibration,
+      acquireBusy,
+      releaseBusy,
+      applyGeometry,
+    ],
   );
 
   // ── Reset to idle (abort, stop, clear all shared state) ──────────
@@ -1249,6 +1324,7 @@ export function useForge() {
     setBusy(false);
     setVariants([]);
     setDesignId(null);
+    setHandoffIndex(null);
     setPhase("idle");
     setModel(null);
     setGuides([]);
@@ -1269,6 +1345,7 @@ export function useForge() {
     statusMessage,
     buildReport,
     designId,
+    handoffIndex,
     variants,
     busy,
     settingParam,

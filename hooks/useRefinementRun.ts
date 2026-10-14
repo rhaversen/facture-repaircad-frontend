@@ -41,6 +41,13 @@ export interface RefinementRun {
     handoffMarkdown: string,
     designId: string,
     runKey: string,
+    options?: {
+      /** Fabrication/design intent from the main run's running doc. */
+      designIntent?: string;
+      /** The handoff variant the picked design came from, e.g.
+       *  "forge_handoff_2" — omitted when unknown. */
+      handoffVariant?: string;
+    },
   ) => Promise<string | null>;
   /** Poll the run to keep `run`/`runningDoc` current; also persists the
       "final guidance exists" flag that drives the re-entry rule. */
@@ -70,6 +77,10 @@ export function useRefinementRun(): RefinementRun {
       handoffMarkdown: string,
       designId: string,
       runKey: string,
+      options?: {
+        designIntent?: string;
+        handoffVariant?: string;
+      },
     ): Promise<string | null> => {
       if (!handoffMarkdown?.trim() || !designId || !runKey) {
         return null;
@@ -145,27 +156,55 @@ export function useRefinementRun(): RefinementRun {
             throw new Error("Flow did not return a refinement run ID.");
           }
 
-          const bootstrapMessage = [
-            "# Role",
+          const intent = options?.designIntent?.trim() ?? "";
+          const handoffVariant = options?.handoffVariant?.trim() ?? "";
+
+          const sections: string[] = [
+            "# Setup — initialization payload, not user text",
             "",
-            "You refine the existing Forge CAD design for this repair — you never create a replacement design for it.",
+            "This is a machine-sent bootstrap payload, not a user refinement " +
+              "request. Record it into your persistent state and do not reply " +
+              "to it: no acknowledgement, clarification question, Forge " +
+              "instruction, or fabrication/assembly guidance in response. Do " +
+              "not alter the selected repair strategy, confirmed repair " +
+              "constraints, fabrication process, material strategy, required " +
+              "part decomposition, assembly strategy, or form-integration " +
+              "intent, and do not rephrase or rewrite any of the sections " +
+              "below.",
             "",
-            "# Bootstrap — initialization payload, not a request",
-            "",
-            "This is a machine-sent setup payload, not a user request. Record it silently in your persistent state — the active design id and the repair requirements below — and do not reply to it. Do not acknowledge this message: no confirmation, preamble, status update, initiative, or summary in response to it.",
+            "If you are asked which design this round is anchored to, cite the " +
+              "id below verbatim.",
             "",
             `CURRENT FORGE DESIGN ID: ${designId}`,
-            "Use this id as the target for every instruction you issue; if asked to look up the active design, your answer is this id. If you are later asked to produce the id, cite it verbatim.",
+          ];
+          if (handoffVariant) {
+            sections.push(
+              `HANDOFF VARIANT: ${handoffVariant}`,
+            );
+          }
+          if (intent) {
+            sections.push(
+              "",
+              "# Fabrication design intent",
+              "",
+              intent,
+            );
+          }
+          sections.push(
             "",
-            "# Repair requirements (authoritative)",
+            "# Selected Forge handoff",
             "",
             handoffMarkdown.trim(),
             "",
-            "# Responding to user requests",
+            "# Later refinement messages",
             "",
-            "For a design change, reply with one short line of what you did, then a forge_instruction targeting the active design. Never target a different design, and only produce replacement-plan output if the user explicitly asks.",
-            "Never narrate reading or reproducing the requirements above — that is context, not content to echo.",
-          ].join("\n");
+            "Subsequent user messages are refinement feedback routed through " +
+              "the pipeline stages. Do not treat this bootstrap as user " +
+              "refinement and do not narrate the sections above when the " +
+              "later user turns arrive.",
+          );
+
+          const bootstrapMessage = sections.join("\n");
 
           const response = await postMessage(
             createdRunId,

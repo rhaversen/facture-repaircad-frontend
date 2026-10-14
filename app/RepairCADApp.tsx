@@ -508,6 +508,7 @@ export default function RepairCADApp() {
       <CadModelView
         handoffs={handoffs}
         runId={activeRunId}
+        fabricationDesignIntent={runningDoc?.fabrication_design_intent}
         shouldAutoGenerate={shouldAutoGenerate}
         onAllRuns={handleToAllRuns}
         onBackToChat={handleBackToChat}

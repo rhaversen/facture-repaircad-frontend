@@ -130,6 +130,13 @@ export default function RepairCADApp() {
 
   const [handoffDismissed, setHandoffDismissed] = useState(false);
 
+  /* One-shot entry intent: the user opened the CAD workspace via timeline
+     marker 5 (Select Initial Design). The view consumes it when its entry
+     check restores a design — the variant picker reopens instead of
+     landing on the restored design's page. Any other navigation clears it
+     so a stale intent can't fire on a later mount. */
+  const [pickerEntryArmed, setPickerEntryArmed] = useState(false);
+
   // The CAD sub-state reported by CadModelView (its useForge designId
   // and final guidance). While the conversation screen is up, the shell
   // owns markers 5/6/7 — 5 is gated by handoffReady, and 6/7 mirror this
@@ -210,6 +217,11 @@ export default function RepairCADApp() {
     if (screen === CAD_SCREEN && action.target < CAD_SCREEN) {
       setHandoffDismissed(true);
     }
+    /* Marker 5 into the CAD screen arms the variant-picker entry intent;
+       any other navigation arms nothing (disarming a pending intent). */
+    setPickerEntryArmed(
+      step === CAD_SUBSTEP_PICKER && action.target === CAD_SCREEN,
+    );
     if (action.target === 2) intake.openAnnotationScreen();
     setScreen(action.target);
   }
@@ -219,6 +231,7 @@ export default function RepairCADApp() {
   function handleBackToChat() {
     if (screen !== CAD_SCREEN) return;
     setHandoffDismissed(true);
+    setPickerEntryArmed(false);
     setScreen(CHAT_SCREEN);
   }
 
@@ -339,6 +352,8 @@ export default function RepairCADApp() {
       // partial (legacy docs, hiccup) must not dump a progressed run back
       // into intake — runningDoc/status carry the progress signal too.
       setScreen(screenForSelectedRun(loadedRun, loadedMessages));
+      // A run switch starts from the run's own entry — no picker intent.
+      setPickerEntryArmed(false);
     } catch {
       // Error handled in hook; stay on the list.
     }
@@ -513,6 +528,8 @@ export default function RepairCADApp() {
         onAllRuns={handleToAllRuns}
         onBackToChat={handleBackToChat}
         onCadStateChange={handleCadStateChange}
+        openPickerOnEntry={pickerEntryArmed}
+        onOpenPickerOnEntryConsumed={() => setPickerEntryArmed(false)}
       />
     );
   }

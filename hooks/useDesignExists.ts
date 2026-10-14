@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { ForgePhase } from "@/lib/types";
 
@@ -24,6 +24,7 @@ export function useDesignExists({
   handoffs,
   autoGenerate = false,
   generate,
+  onExists,
 }: {
   phase: ForgePhase;
   rehydrate: (args: {
@@ -35,10 +36,22 @@ export function useDesignExists({
   handoffs: string[];
   autoGenerate?: boolean;
   generate: (args: { handoffs: string[]; runId: string | null }) => Promise<void>;
+  /**
+   * Fired once when persistence restores a design. Reporting the timing of
+   * the restoration (in normal replay, the UI is already the design page)
+   * enables entry-time hooks — e.g., if the user entered the CAD screen
+   * from the marker picker, reopen the variant picker after restore.
+   * The restoration's busy lock is released before this fires.
+   */
+  onExists?: () => void;
 }) {
   const [state, setState] = useState<"checking" | "exists" | "missing">(
     "checking",
   );
+  const onExistsRef = useRef(onExists);
+  useEffect(() => {
+    onExistsRef.current = onExists;
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -53,6 +66,7 @@ export function useDesignExists({
         if (cancelled) return;
         if (restored) {
           setState("exists");
+          onExistsRef.current?.();
         } else if (autoGenerate) {
           // Nothing to restore on an armed live run: generate the models
           // right away (the double-fire risk during StrictMode remounts is

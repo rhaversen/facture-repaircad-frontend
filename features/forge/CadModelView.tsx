@@ -57,6 +57,19 @@ interface CadModelViewProps {
     hasAfterCadRun: boolean;
     roundState: TimelineRoundState;
   }) => void;
+  /**
+   * One-shot entry intent: the user opened this workspace via timeline
+   * marker 5 (Select Initial Design) from the conversation screen. When
+   * the entry check restores a persisted design, the variant picker
+   * reopens on that pick instead of landing on the design's page.
+   */
+  openPickerOnEntry?: boolean;
+  /**
+   * Fires (exactly once) when the view consumes `openPickerOnEntry`,
+   * telling the shell to disarm its entry intent now that this mount is
+   * the one that received it.
+   */
+  onOpenPickerOnEntryConsumed?: () => void;
 }
 
 /*
@@ -75,6 +88,8 @@ export default function CadModelView({
   onAllRuns,
   onBackToChat,
   onCadStateChange,
+  openPickerOnEntry = false,
+  onOpenPickerOnEntryConsumed,
 }: CadModelViewProps) {
   const forge = useForge();
   const {
@@ -103,6 +118,17 @@ export default function CadModelView({
   } = forge;
 
   /*
+    The shell's picker entry intent only works for the mount that receives
+    it: the entry check's `onExists` fires once per mount, so mirror the
+    prop into a ref (it can change between mount and restoration) and
+    consume it exactly once there.
+  */
+  const openPickerOnEntryRef = useRef(openPickerOnEntry);
+  useEffect(() => {
+    openPickerOnEntryRef.current = openPickerOnEntry;
+  }, [openPickerOnEntry]);
+
+  /*
     Entry check: render a persisted design/variant set immediately (no LLM
     call). When nothing is persisted, a live run generates the models itself
     while a browsed run keeps the manual Generate gate.
@@ -115,6 +141,15 @@ export default function CadModelView({
     handoffs,
     autoGenerate: shouldAutoGenerate,
     generate,
+    /* Fired once, after rehydration has released its busy lock, when a
+       persisted design was restored. If the user entered via marker 5,
+       hand back to the variant picker on that restored pick. */
+    onExists: () => {
+      if (!openPickerOnEntryRef.current) return;
+      openPickerOnEntryRef.current = false;
+      void reopenDesignPicker({ runId });
+      onOpenPickerOnEntryConsumed?.();
+    },
   });
 
   /*
@@ -291,11 +326,18 @@ export default function CadModelView({
      round, so the render-phase adjustment below resets it and step 7
      re-locks. */
   const [roundCommitted, setRoundCommitted] = useState(false);
+  /* Which CAD sub-view the user asked to see: the calibration page (6)
+     or the final-guidance page (7). null = phase-driven — 6 shows while
+     the phase is calibrating, 7 the moment it is ready. A phase change
+     (design re-pick, refinement round) resets it to null, so a manual
+     page pick never outlives the geometry it described. */
+  const [viewTargetStep, setViewTargetStep] = useState<6 | 7 | null>(null);
   const [prevRefinementRunId, setPrevRefinementRunId] =
     useState(refinementRunId);
   if (prevRefinementRunId !== refinementRunId) {
     setPrevRefinementRunId(refinementRunId);
     if (roundCommitted) setRoundCommitted(false);
+    if (viewTargetStep !== null) setViewTargetStep(null);
   }
   const roundState: TimelineRoundState =
     finalGuidance !== "" ? "sealed" : roundCommitted ? "generating" : "none";
@@ -315,8 +357,26 @@ export default function CadModelView({
     The CAD workspace owns three timeline sub-steps: 5 while the
     rough-design picker is open (or a model is still being generated),
     6 while refining/calibrating, 7 once the repair guidance has landed.
+    A manual marker pick between 6 and 7 overrides the phase-driven step
+    while it is valid — it stops being valid the next time the phase
+    writes geometry (designId flips) or a new run starts.
   */
-  const currentCADStep = cadStepFor(phase, roundState);
+  const [prevStepPhase, setPrevStepPhase] = useState(phase);
+  if (prevStepPhase !== phase) {
+    setPrevStepPhase(phase);
+    if (viewTargetStep !== null) setViewTargetStep(null);
+  }
+  /* The pick counts while the branch it points at really renders:
+     6 needs phase "ready", 7 the same ("calibrating" is unreachable,
+     so both count there). Otherwise the step falls back to the
+     phase-driven one, so the highlighted marker always matches what
+     is shown. */
+  const viewTargetActive =
+    phase === "ready" || phase === "calibrating";
+  const currentCADStep =
+    viewTargetStep !== null && viewTargetActive
+      ? viewTargetStep
+      : cadStepFor(phase, roundState);
 
   /* The app shell renders timeline markers 6/7 while the conversation
      screen is up, where this view's own CAD sub-state fields don't
@@ -430,7 +490,12 @@ export default function CadModelView({
     );
   }
 
-  const showFinalGuidanceSection = phase === "ready";
+  /* Ready-phase view split: 7 = the final-model + guidance document;
+     6 (a manual marker pick while still "ready") = back to the
+     calibration page — same model, calibration panel and chat instead
+     of the guidance document. */
+  const showFinalGuidanceSection =
+    phase === "ready" && viewTargetStep !== 6;
 
   /*
     The CAD column of the timeline is decided by the shared stepNav:
@@ -464,9 +529,17 @@ export default function CadModelView({
       /* Reopen the variant picker with the run's recorded
          candidates — works from any CAD phase. */
       reopenDesignPicker({ runId });
+      setViewTargetStep(null);
       return;
     }
     if (step === 6) {
+      /* The shared screen shows either sub-state: record the pick so
+         the calibration page (with its stale guide markers cleared)
+         renders instead of the guidance view; the geometry behind
+         both is unchanged. */
+      setViewTargetStep(6);
+      setActiveGuideParam(null);
+      setGuideFrame(null);
       /* Restore the current design's calibration view when the
          model state was dropped (e.g. jumped in from the picker). */
       if (model === null && designId !== null) {
@@ -474,9 +547,13 @@ export default function CadModelView({
       }
       return;
     }
-    /* step 7: the guidance section lives on this page — reveal it. */
-    const el = document.getElementById("repair-guidance-section");
-    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (step === 7) {
+      setViewTargetStep(7);
+      /* step 7: the guidance section lives on this page — reveal it. */
+      const el = document.getElementById("repair-guidance-section");
+      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
   }
 
   return (
@@ -581,7 +658,8 @@ export default function CadModelView({
             </button>
           </div>
         </section>
-      ) : phase === "calibrating" ? (
+      ) : phase === "calibrating" ||
+        (phase === "ready" && viewTargetStep === 6) ? (
         <div className="flex min-h-[600px] flex-1 flex-col gap-6 pt-6 lg:flex-row lg:items-stretch">
           <ViewportFrame
             className="min-w-0 flex-1"

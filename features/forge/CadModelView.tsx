@@ -17,6 +17,7 @@ import {
   stepNav,
   timelineStepStates,
   type TimelineNavState,
+  type TimelineRoundState,
 } from "@/lib/runProgress";
 import {
   CadCanvas,
@@ -43,10 +44,12 @@ interface CadModelViewProps {
   onBackToChat?: () => void;
   /** Reports the design-selection state to the app shell so its
       timeline markers 6/7 enable from the conversation once a design
-      is selected (and 7 with the final guidance). */
+      is selected (6: a refinement run exists for the pick, 7: that
+      round is committed — the document is in flight or landed). */
   onCadStateChange?: (state: {
     cadSelectionMade: boolean;
-    hasFinalGuidance: boolean;
+    hasAfterCadRun: boolean;
+    roundState: TimelineRoundState;
   }) => void;
 }
 
@@ -119,19 +122,27 @@ export default function CadModelView({
     error: refinementError,
     initialize: initializeRefinement,
     reconcile: reconcileRefinement,
+    sendMessage: sendMessageRefinement,
   } = useRefinementRun();
 
+  /*
+    The refinement run is persisted against the main repair run's id:
+    re-entering the CAD workspace resumes the same conversation while
+    this round has final guidance, and creates a fresh run once guidance
+    exists. The designId guard makes the run create with the chosen
+    design on first entry.
+  */
+  // Depend on the handoff text, not the `handoffs` array: the app shell
+  // rebuilds that array (via collectHandoffs) on every poll re-render, and a
+  // fresh array reference re-runs this effect, re-invoking the bootstrap.
+  const bootstrapHandoff = handoffs[0] ?? "";
   useEffect(() => {
-    const bootstrapHandoff = handoffs[0] ?? "";
     if (!bootstrapHandoff.trim()) return;
-    if (designId === null) return;
-    initializeRefinement({
-      handoffMarkdown: bootstrapHandoff,
-      designId,
-    }).catch((err) => {
+    if (designId === null || !runId) return;
+    initializeRefinement(bootstrapHandoff, designId, runId).catch((err) => {
       console.error("Could not start refinement conversation:", err);
     });
-  }, [handoffs, designId, initializeRefinement]);
+  }, [bootstrapHandoff, designId, runId, initializeRefinement]);
 
   // Keep the refinement run synchronized so forge_instruction / final_guidance
   // produced by R3 becomes visible to this component.
@@ -179,7 +190,8 @@ export default function CadModelView({
   /*
     Guides visibility: single selection. Active guides are shown; every
     other parameter's are hidden (null = none shown). The panel sets this
-    on row hover or click. Reset with the design switch.
+    on row hover or click. Reset with the design switch and when the
+    refinement round is committed (the model is done being calibrated).
   */
   const [activeGuideParam, setActiveGuideParam] = useState<string | null>(null);
   const guideVisible = useCallback(
@@ -236,12 +248,40 @@ export default function CadModelView({
 
   const finalGuidance = refinementRunningDoc?.final_guidance?.trim() ?? "";
 
+  /* Refinement round state for marker 7 and the CAD sub-step: "sealed"
+     once the document is on file, "generating" from the moment the
+     guidance request was sent (the OK click), otherwise "none". The
+     commit flag records this view's own action against *this* run —
+     when the run id switches the flag no longer describes a committed
+     round, so the render-phase adjustment below resets it and step 7
+     re-locks. */
+  const [roundCommitted, setRoundCommitted] = useState(false);
+  const [prevRefinementRunId, setPrevRefinementRunId] =
+    useState(refinementRunId);
+  if (prevRefinementRunId !== refinementRunId) {
+    setPrevRefinementRunId(refinementRunId);
+    if (roundCommitted) setRoundCommitted(false);
+  }
+  const roundState: TimelineRoundState =
+    finalGuidance !== "" ? "sealed" : roundCommitted ? "generating" : "none";
+
+  /* Committing the round moves the timeline to step 7: the active guide
+     selection and any pending camera reframe belong to the calibrated
+     model — clear them the moment the state changes, in either
+     direction. */
+  const [prevRoundState, setPrevRoundState] = useState(roundState);
+  if (prevRoundState !== roundState) {
+    setPrevRoundState(roundState);
+    setActiveGuideParam(null);
+    setGuideFrame(null);
+  }
+
   /*
     The CAD workspace owns three timeline sub-steps: 5 while the
     rough-design picker is open (or a model is still being generated),
     6 while refining/calibrating, 7 once the repair guidance has landed.
   */
-  const currentCADStep = cadStepFor(phase, finalGuidance !== "");
+  const currentCADStep = cadStepFor(phase, roundState);
 
   /* The app shell renders timeline markers 6/7 while the conversation
      screen is up, where this view's own CAD sub-state fields don't
@@ -251,13 +291,16 @@ export default function CadModelView({
   useEffect(() => {
     onCadStateChangeRef.current?.({
       cadSelectionMade: designId !== null,
-      hasFinalGuidance: finalGuidance !== "",
+      hasAfterCadRun: refinementRunId !== null,
+      roundState,
     });
-  }, [designId, finalGuidance]);
+  }, [designId, refinementRunId, roundState]);
 
   function handleDownloadFinalGuidance() {
     if (!finalGuidance) return;
-    const blob = new Blob([finalGuidance], { type: "text/markdown;charset=utf-8" });
+    const blob = new Blob([finalGuidance], {
+      type: "text/markdown;charset=utf-8",
+    });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -280,6 +323,53 @@ export default function CadModelView({
     }
   }
 
+  // Requests the repair-guidance document from the refinement run. Sent once
+  // per design/calibration round — the dedupe ref keeps repeated clicks from
+  // re-asking while the agent is still producing it.
+  const guidanceRequestedRef = useRef<string | null>(null);
+  const [guidanceError, setGuidanceError] = useState("");
+
+  async function handleFinishCalibration() {
+    setGuidanceError("");
+    try {
+      await finishCalibration({ runId });
+    } catch (err) {
+      console.error("Could not render the final model:", err);
+      return;
+    }
+    if (guidanceRequestedRef.current === designId) {
+      return;
+    }
+    const measurements = parameters
+      .filter((parameter) => confirmedValues[parameter.name] !== undefined)
+      .map((parameter) => {
+        const value = confirmedValues[parameter.name];
+        return `- ${parameter.name}: ${value}${parameter.unit ? ` ${parameter.unit}` : ""}`;
+      })
+      .join("\n");
+    const body = [
+      "Calibration is complete and the final model has been rendered.",
+      "Produce the final repair guidance document now.",
+      measurements
+        ? `Confirmed measurements:\n${measurements}`
+        : "No parameters were adjusted during calibration.",
+    ].join("\n");
+    guidanceRequestedRef.current = designId;
+    setRoundCommitted(true);
+    try {
+      await sendMessageRefinement(body);
+    } catch (err) {
+      console.error("Could not request final guidance:", err);
+      guidanceRequestedRef.current = null;
+      /* Reverts the round to its pre-commit shape so marker 7 re-locks;
+         the render-phase sync below then holds it if the run switched. */
+      setRoundCommitted(false);
+      setGuidanceError(
+        refinementError || "Could not request the final repair guidance.",
+      );
+    }
+  }
+
   const pickerKey = useMemo(
     () => variants.map((v) => v.designId).join(","),
     [variants],
@@ -291,9 +381,7 @@ export default function CadModelView({
   // remounts the picker (pickerKey) and a mounted-state selection would be
   // lost; a stale selection referring to a vanished candidate is
   // dropped below.
-  const [pickerSelectedId, setPickerSelectedId] = useState<string | null>(
-    null,
-  );
+  const [pickerSelectedId, setPickerSelectedId] = useState<string | null>(null);
 
   const [prevVariants, setPrevVariants] = useState(variants);
   if (prevVariants !== variants) {
@@ -318,10 +406,13 @@ export default function CadModelView({
     clarificationActive: false,
     cadStep: currentCADStep,
     cadSelectionMade: designId !== null,
-    hasFinalGuidance: finalGuidance !== "",
+    afterCadRunExists: refinementRunId !== null,
+    roundState,
   };
-  const { states: stepStates, reasons: stepReasons } =
-    timelineStepStates(cadNav, CAD_SCREEN);
+  const { states: stepStates, reasons: stepReasons } = timelineStepStates(
+    cadNav,
+    CAD_SCREEN,
+  );
 
   function handleTimelineStep(step: number) {
     const action = stepNav(cadNav, step);
@@ -359,219 +450,241 @@ export default function CadModelView({
       reasons={stepReasons}
     >
       {entryChecking ? (
-          <div className="flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
-            <div className="flex flex-col items-center justify-center p-6 text-center text-ink-soft">
-              <div className="cad-spinner" />
-              <p>Checking for an existing design…</p>
-            </div>
+        <div className="flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
+          <div className="flex flex-col items-center justify-center p-6 text-center text-ink-soft">
+            <div className="cad-spinner" />
+            <p>Checking for an existing design…</p>
           </div>
-        ) : entryMissing ? (
-          <div className="flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden">
-            <div className="flex max-w-[520px] flex-col items-center px-6 text-center text-ink-soft">
-              <strong>Your repair design is ready for generation.</strong>
-              <button
-                type="button"
-                className="mt-4.5 bg-brand px-5 py-3 font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] hover:bg-brand-dark"
-                onClick={() => generate({ handoffs, runId })}
-              >
-                Continue
-              </button>
-            </div>
+        </div>
+      ) : entryMissing ? (
+        <div className="flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden">
+          <div className="flex max-w-[520px] flex-col items-center px-6 text-center text-ink-soft">
+            <strong>Your repair design is ready for generation.</strong>
+            <button
+              type="button"
+              className="mt-4.5 bg-brand px-5 py-3 font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] hover:bg-brand-dark"
+              onClick={() => generate({ handoffs, runId })}
+            >
+              Continue
+            </button>
           </div>
-        ) : phase === "error" ? (
-          <div className="relative flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
-            <div className="max-w-[420px] p-6 text-center text-[#ffb4b4]">
-              <strong className="mb-2 block text-lg">Forge could not generate the model.</strong>
-              <p>{error || "Unknown error."}</p>
-              <button
-                type="button"
-                className="btn-secondary mt-4.5"
-                onClick={() => {
-                  reset();
-                  generate({ handoffs, runId });
-                }}
-              >
-                Try again
-              </button>
-            </div>
+        </div>
+      ) : phase === "error" ? (
+        <div className="relative flex min-h-[480px] w-full flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white">
+          <div className="max-w-[420px] p-6 text-center text-[#ffb4b4]">
+            <strong className="mb-2 block text-lg">
+              Forge could not generate the model.
+            </strong>
+            <p>{error || "Unknown error."}</p>
+            <button
+              type="button"
+              className="btn-secondary mt-4.5"
+              onClick={() => {
+                reset();
+                generate({ handoffs, runId });
+              }}
+            >
+              Try again
+            </button>
           </div>
-        ) : phase === "choosing" ? (
-          <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {/*
+        </div>
+      ) : phase === "choosing" ? (
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {/*
               Bleed mode: Page's <main> doesn't scroll, the tile region
               here does. The bar below is a regular pinned flex row —
               the bar sits flush against the bottom edge just like
               the top row with the pinned progress.
             */}
-            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pb-6 max-[640px]:px-5">
-              <div className="shrink-0">
-                <h1 className="pt-6 text-[30px]">Choose a rough shape for the design</h1>
-                <p className="mb-4 text-[17px] leading-relaxed text-muted">
-                    Several candidates were generated from your repair handoff.
-                    Select the one you want — the other candidates are kept while
-                    you decide. This step is only about getting the right{" "}
-                    <strong>shape</strong> — the next step will ask you for
-                    accurate measurements, so no need to judge the exact
-                    dimensions here.
-                  </p>
-              </div>
-              <div className="mb-4">
-                <DesignPicker
-                  key={pickerKey}
-                  variants={variants}
-                  selectedId={pickerSelectedId}
-                  onSelected={setPickerSelectedId}
-                />
-              </div>
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pb-6 max-[640px]:px-5">
+            <div className="shrink-0">
+              <h1 className="pt-6 text-[30px]">
+                Choose a rough shape for the design
+              </h1>
+              <p className="mb-4 text-[17px] leading-relaxed text-muted">
+                Several candidates were generated from your repair handoff.
+                Select the one you want — the other candidates are kept while
+                you decide. This step is only about getting the right{" "}
+                <strong>shape</strong> — the next step will ask you for accurate
+                measurements, so no need to judge the exact dimensions here.
+              </p>
             </div>
-            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-line bg-white px-6 py-4 max-[640px]:px-5">
-              <span className="text-[14px] text-muted">
-                {pickerSelectedId !== null
-                  ? `Design ${variants.findIndex((v) => v.designId === pickerSelectedId) + 1} is selected. Pick another tile to switch.`
-                  : "Select a design to continue."}
-              </span>
-              <button
-                type="button"
-                className={`bg-brand px-6 py-3 text-[15px] font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] ${
-                  pickerSelectedId !== null
-                    ? "hover:bg-brand-dark"
-                    : "cursor-not-allowed opacity-40"
-                }`}
-                disabled={pickerSelectedId === null}
-                onClick={() =>
-                  pickerSelectedId !== null && chooseDesign(pickerSelectedId)
-                }
-              >
-                {pickerSelectedId !== null
-                  ? `Continue with Design ${variants.findIndex((v) => v.designId === pickerSelectedId) + 1} →`
-                  : "Continue →"}
-              </button>
+            <div className="mb-4">
+              <DesignPicker
+                key={pickerKey}
+                variants={variants}
+                selectedId={pickerSelectedId}
+                onSelected={setPickerSelectedId}
+              />
             </div>
-          </section>
-        ) : phase === "calibrating" ? (
-          <div className="flex min-h-[600px] flex-1 flex-col gap-6 pt-6 lg:flex-row lg:items-stretch">
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-line bg-white px-6 py-4 max-[640px]:px-5">
+            <span className="text-[14px] text-muted">
+              {pickerSelectedId !== null
+                ? `Design ${variants.findIndex((v) => v.designId === pickerSelectedId) + 1} is selected. Pick another tile to switch.`
+                : "Select a design to continue."}
+            </span>
+            <button
+              type="button"
+              className={`bg-brand px-6 py-3 text-[15px] font-semibold text-white shadow-[0_1px_2px_rgba(29,58,153,0.25)] ${
+                pickerSelectedId !== null
+                  ? "hover:bg-brand-dark"
+                  : "cursor-not-allowed opacity-40"
+              }`}
+              disabled={pickerSelectedId === null}
+              onClick={() =>
+                pickerSelectedId !== null && chooseDesign(pickerSelectedId)
+              }
+            >
+              {pickerSelectedId !== null
+                ? `Continue with Design ${variants.findIndex((v) => v.designId === pickerSelectedId) + 1} →`
+                : "Continue →"}
+            </button>
+          </div>
+        </section>
+      ) : phase === "calibrating" ? (
+        <div className="flex min-h-[600px] flex-1 flex-col gap-6 pt-6 lg:flex-row lg:items-stretch">
+          <ViewportFrame
+            className="min-w-0 flex-1"
+            model={model}
+            generating={isLoading}
+            fitKey={designId}
+            designId={designId}
+            guides={guides}
+            guideVisible={guideVisible}
+            guideFrame={guideFrame}
+            spinnerLabel={spinnerLabel}
+            dimmed={modelPending}
+          />
+
+          {statusMessage !== "" ? (
+            <p className="shrink-0 text-[12px] leading-snug text-red-600">
+              {statusMessage}
+            </p>
+          ) : null}
+          {buildReport && buildReport.trim() !== "" ? (
+            <pre className="shrink-0 max-h-40 overflow-y-auto rounded-md border border-red-200 bg-red-50 p-2 text-left font-mono text-[11px] leading-snug whitespace-pre-wrap text-red-700">
+              {buildReport}
+            </pre>
+          ) : null}
+          <CalibrationPanel
+            className="w-full lg:min-w-0 lg:flex-1"
+            parameters={parameters}
+            confirmedValues={confirmedValues}
+            settingParam={settingParam ?? (busy ? "busy" : null)}
+            onConfirm={(parameter, value) =>
+              handleConfirmParam(parameter.name, value)
+            }
+            onFinish={handleFinishCalibration}
+            activeParam={activeGuideParam}
+            onSelectGuides={setActiveGuideParam}
+            onShowGuideCamera={showGuideCamera}
+            guidesAvailable={(name) => guidesByParam.has(name)}
+          />
+
+          <RefinementChat
+            refinementRunId={refinementRunId}
+            refinementInitializing={refinementInitializing}
+            refinementError={refinementError}
+            intro="Ask to change the model, clarify a measurement, or inspect the current repair design."
+          />
+        </div>
+      ) : (
+        <div className="flex min-h-[600px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="mb-6 shrink-0">
+              <h1 className="text-[30px]">
+                {phase === "ready"
+                  ? "Provisional CAD model"
+                  : "Generating model..."}
+              </h1>
+              <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
+                Generated from your repair handoff via Facture Forge.
+              </p>
+            </div>
+
             <ViewportFrame
-              className="min-w-0 flex-1"
               model={model}
               generating={isLoading}
               fitKey={designId}
               designId={designId}
               guides={guides}
               guideVisible={guideVisible}
-              guideFrame={guideFrame}
               spinnerLabel={spinnerLabel}
               dimmed={modelPending}
             />
 
-            {statusMessage !== "" ? (
-              <p className="shrink-0 text-[12px] leading-snug text-red-600">{statusMessage}</p>
-            ) : null}
-            {buildReport && buildReport.trim() !== "" ? (
-              <pre className="shrink-0 max-h-40 overflow-y-auto rounded-md border border-red-200 bg-red-50 p-2 text-left font-mono text-[11px] leading-snug whitespace-pre-wrap text-red-700">
-                {buildReport}
-              </pre>
-            ) : null}
-            <CalibrationPanel
-              className="w-full lg:min-w-0 lg:flex-1"
-              parameters={parameters}
-              confirmedValues={confirmedValues}
-              settingParam={settingParam ?? (busy ? "busy" : null)}
-              onConfirm={(parameter, value) => handleConfirmParam(parameter.name, value)}
-              onFinish={() => finishCalibration({ runId })}
-              activeParam={activeGuideParam}
-              onSelectGuides={setActiveGuideParam}
-              onShowGuideCamera={showGuideCamera}
-              guidesAvailable={(name) => guidesByParam.has(name)}
-            />
-
-            <RefinementChat
-              refinementRunId={refinementRunId}
-              refinementInitializing={refinementInitializing}
-              refinementError={refinementError}
-              intro="Ask to change the model, clarify a measurement, or inspect the current repair design."
-            />
-          </div>
-        ) : (
-          <div className="flex min-h-[600px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
-            <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-              <div className="mb-6 shrink-0">
-                <h1 className="text-[30px]">
-                  {phase === "ready" ? "Provisional CAD model" : "Generating model..."}
-                </h1>
-                <p className="mt-0 mb-9 text-[17px] leading-relaxed text-muted">
-                  Generated from your repair handoff via Facture Forge.
-                </p>
-              </div>
-
-              <ViewportFrame
-                model={model}
-                generating={isLoading}
-                fitKey={designId}
-                designId={designId}
-                guides={guides}
-                guideVisible={guideVisible}
-                spinnerLabel={spinnerLabel}
-                dimmed={modelPending}
-              />
-
-              {phase === "ready" && (
-                <div className="mt-6 flex shrink-0 gap-3">
-                  {designId !== null && (
-                    <button
-                      type="button"
-                      title="Download the loaded model as STL"
-                      onClick={handleDownload}
-                      className="btn-secondary"
-                    >
-                      Download STL
-                    </button>
-                  )}
-                  {finalGuidance && (
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      onClick={handleDownloadFinalGuidance}
-                    >
-                      Download repair instructions
-                    </button>
-                  )}
-                </div>
-              )}
-            </section>
-          </div>
-        )}
-
-        {showFinalGuidanceSection && (
-          <section
-            id="repair-guidance-section"
-            className="mt-6 shrink-0 rounded-xl border border-line bg-surface p-6"
-          >
-            <div className="mb-5 flex items-start justify-between gap-5 max-[800px]:flex-col">
-              <div>
-                <h2 className="mb-1.5 text-xl">Repair instructions</h2>
-                <p className="m-0 text-sm leading-relaxed text-muted-2">
-                  Final fabrication, assembly, and installation guidance for this repair.
-                </p>
-              </div>
-              {finalGuidance && (
-                <button type="button" className="btn-secondary max-[800px]:w-full" onClick={handleDownloadFinalGuidance}>
-                  Download instructions
-                </button>
-              )}
-            </div>
-
-            {finalGuidance ? (
-              <div className="markdown-body max-h-[40vh] overflow-y-auto overscroll-contain rounded-[10px] border border-line bg-white p-5 leading-[1.65]">
-                <ReactMarkdown>{finalGuidance}</ReactMarkdown>
-              </div>
-            ) : (
-              <div className="rounded-[10px] border border-dashed border-[#cbd0d6] bg-white p-5 leading-relaxed text-[#7a828d]">
-                Final repair instructions will appear here when the repair design is complete.
+            {phase === "ready" && (
+              <div className="mt-6 flex shrink-0 gap-3">
+                {designId !== null && (
+                  <button
+                    type="button"
+                    title="Download the loaded model as STL"
+                    onClick={handleDownload}
+                    className="btn-secondary"
+                  >
+                    Download STL
+                  </button>
+                )}
+                {finalGuidance && (
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={handleDownloadFinalGuidance}
+                  >
+                    Download repair instructions
+                  </button>
+                )}
               </div>
             )}
           </section>
-        )}
+        </div>
+      )}
 
+      {showFinalGuidanceSection && (
+        <section
+          id="repair-guidance-section"
+          className="mt-6 shrink-0 rounded-xl border border-line bg-surface p-6"
+        >
+          <div className="mb-5 flex items-start justify-between gap-5 max-[800px]:flex-col">
+            <div>
+              <h2 className="mb-1.5 text-xl">Repair instructions</h2>
+              <p className="m-0 text-sm leading-relaxed text-muted-2">
+                Final fabrication, assembly, and installation guidance for this
+                repair.
+              </p>
+            </div>
+            {finalGuidance && (
+              <button
+                type="button"
+                className="btn-secondary max-[800px]:w-full"
+                onClick={handleDownloadFinalGuidance}
+              >
+                Download instructions
+              </button>
+            )}
+          </div>
+
+          {finalGuidance ? (
+            <div className="markdown-body max-h-[40vh] overflow-y-auto overscroll-contain rounded-[10px] border border-line bg-white p-5 leading-[1.65]">
+              <ReactMarkdown>{finalGuidance}</ReactMarkdown>
+            </div>
+          ) : (
+            <div
+              className={
+                guidanceError
+                  ? "rounded-[10px] border border-dashed border-red-300 bg-white p-5 leading-relaxed text-red-700"
+                  : "rounded-[10px] border border-dashed border-[#cbd0d6] bg-white p-5 leading-relaxed text-[#7a828d]"
+              }
+            >
+              {guidanceError ||
+                (refinementRunId
+                  ? "The repair guidance document is being generated and will appear here the moment it arrives."
+                  : "Final repair instructions will appear here when the repair design is complete.")}
+            </div>
+          )}
+        </section>
+      )}
     </Page>
   );
 }
@@ -610,7 +723,9 @@ function ViewportFrame({
   className?: string;
 }) {
   return (
-    <div className={`relative flex min-h-[420px] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white max-lg:h-[560px] ${className ?? ""}`}>
+    <div
+      className={`relative flex min-h-[420px] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-line-soft bg-white max-lg:h-[560px] ${className ?? ""}`}
+    >
       {model !== null ? (
         <CadCanvas
           generating={generating}
@@ -631,12 +746,17 @@ function ViewportFrame({
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 p-6 text-center text-ink-soft">
           <div className="cad-spinner" />
           <p>{spinnerLabel}</p>
-          <p className="mt-1.5 text-[13px] text-[#8a93a1]">This can take a minute while Forge works.</p>
+          <p className="mt-1.5 text-[13px] text-[#8a93a1]">
+            This can take a minute while Forge works.
+          </p>
         </div>
       )}
 
       {dimmed && (
-        <div className="pointer-events-none absolute inset-0 bg-white/60" title="Applying the change…">
+        <div
+          className="pointer-events-none absolute inset-0 bg-white/60"
+          title="Applying the change…"
+        >
           <p className="sr-only">Applying the change…</p>
         </div>
       )}
@@ -669,7 +789,9 @@ function RefinementChat({
       </div>
 
       {refinementInitializing && (
-        <div className="p-4.5 text-sm text-muted-2">Starting refinement assistant—</div>
+        <div className="p-4.5 text-sm text-muted-2">
+          Starting refinement assistant—
+        </div>
       )}
 
       {refinementError && (
@@ -680,10 +802,7 @@ function RefinementChat({
 
       {refinementRunId && (
         <div className="min-h-0 flex-1">
-          <FlowChatFrame
-            runId={refinementRunId}
-            title="CAD refinement"
-          />
+          <FlowChatFrame runId={refinementRunId} title="CAD refinement" />
         </div>
       )}
     </aside>

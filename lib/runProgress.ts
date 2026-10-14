@@ -56,18 +56,10 @@ export function deriveScreen(state: ScreenState): number {
     (state.run !== null &&
       (hasUserTurn(state.messages) || runShowsProgress(state.run)));
   let screen = state.requestedScreen;
-  if (
-    screen >= INTAKE_MIN &&
-    screen <= INTAKE_MAX &&
-    conversationReady
-  ) {
+  if (screen >= INTAKE_MIN && screen <= INTAKE_MAX && conversationReady) {
     screen = CHAT_SCREEN;
   }
-  if (
-    screen === CHAT_SCREEN &&
-    handoffReady &&
-    !state.handoffDismissed
-  ) {
+  if (screen === CHAT_SCREEN && handoffReady && !state.handoffDismissed) {
     screen = CAD_SCREEN;
   }
   return screen;
@@ -119,6 +111,9 @@ export function timelineStepToScreen(step: number): number {
 export type StepClickState = "enabled" | "disabled";
 export type StepClickStates = Partial<Record<number, StepClickState>>;
 
+/** Refinement-round commit state (see TimelineNavState.roundState). */
+export type TimelineRoundState = "none" | "generating" | "sealed";
+
 /** Per-step tooltip reason, shown on locked markers. */
 export type StepReasons = Partial<Record<number, string>>;
 
@@ -145,8 +140,19 @@ export interface TimelineNavState {
   /** A design is selected in the CAD workspace: steps 6 and 7 need one.
       Ignored on other screens; the CAD view supplies it. */
   cadSelectionMade: boolean;
-  /** The final repair guidance exists: step 7 becomes unlocked. */
-  hasFinalGuidance: boolean;
+  /** An AfterForge refinement run exists for this round: step 6 needs
+      one to calibrate against, and step 7 needs it plus the round
+      started. Off-CAD, on first visit the run is created when the CAD
+      workspace opens, so it only gates the CAD sub-step; on-CAD this is
+      sourced from the live hook. */
+  afterCadRunExists: boolean;
+  /** The refinement round's commit state: "none" = no round started,
+      "generating" = the round is committed — the OK button fired (or a
+      resumed/inherited run is live) and the document is still in
+      flight, "sealed" = the final document has landed. Step 7 opens the
+      moment the round is committed, because step 6 and step 7 share the
+      CAD screen — only the guidance box content differs. */
+  roundState: TimelineRoundState;
 }
 
 export type StepNavAction =
@@ -163,8 +169,12 @@ const REASON_CLARIFICATION =
 const REASON_NO_HANDOFF =
   "No CAD draft yet — the conversation still needs to run.";
 const REASON_SELECT_DESIGN = "Select a design first.";
+const REASON_NO_REFINEMENT =
+  "Refine the design first — this round has no refinement run yet.";
+const REASON_REFINE_OTHER_DESIGN =
+  "Guidance belongs to the other design — refine the selected one first.";
 const REASON_NO_GUIDANCE =
-  "Repair guidance appears once calibration is finished.";
+  "The repair guidance document arrives once the refinement round is committed and finished.";
 
 /** Timeline markers for the CAD sub-states (all on screen 6). */
 export const CAD_SUBSTEP_PICKER = 5;
@@ -184,9 +194,10 @@ export const CONVERSATION_STEP = 4;
  * (`cadStep`): going back to an already-shown sub-state always works;
  * going forward requires the state that sub-state was built on — the
  * picker as-is, calibration a selected design, guidance the final
- * document. Off-CAD the sub-state is unknown to the caller, so the CAD
- * markers gate on the handoff plus a selected design for 6/7 — the CAD
- * view (or its entry check) settles which sub-state to show on landing.
+ * document. Off-CAD the sub-state is unknown to the caller, so the
+ * handoff must exist first, then steps 6/7 gate on the same refinement-
+ * run state as on-CAD — the CAD view (or its entry check) settles which
+ * sub-state to show on landing.
  */
 export function stepNav(state: TimelineNavState, step: number): StepNavAction {
   const {
@@ -196,7 +207,8 @@ export function stepNav(state: TimelineNavState, step: number): StepNavAction {
     clarificationActive,
     cadStep,
     cadSelectionMade,
-    hasFinalGuidance,
+    afterCadRunExists,
+    roundState,
   } = state;
   const toScreen = timelineStepToScreen(step);
 
@@ -223,10 +235,31 @@ export function stepNav(state: TimelineNavState, step: number): StepNavAction {
     if (step === CAD_SUBSTEP_PICKER) {
       return { kind: "navigate", target: CAD_SUBSTEP_PICKER };
     }
-    if (!cadSelectionMade) {
-      return { kind: "locked", reason: REASON_SELECT_DESIGN };
+    /* Step 6 needs a refinement round to exist for THIS design — the run
+       keyed by the run id carries forge_instruction / final_guidance for
+       one chosen design, so picking another design restarts the round.
+       Step 7 needs the round COMMITTED: it opens the moment calibration
+       is finished and the document is in flight, because steps 6 and 7
+       share this screen — only the guidance box content differs.
+       Together the gates give:
+       - first visit, nothing done yet → both lock until a design is
+         picked and its run creates itself;
+       - a fresh pick after round-1 guidance exists → both lock again,
+         because the sealed guidance is about the previous design;
+       - round in flight or finished → 6 stays open (re-calibrate) and
+         so does 7, while the box shows "generating" until sealed. */
+    if (step >= CAD_SUBSTEP_CALIBRATION && !afterCadRunExists) {
+      return {
+        kind: "locked",
+        reason:
+          roundState === "sealed"
+            ? REASON_REFINE_OTHER_DESIGN
+            : !cadSelectionMade
+              ? REASON_SELECT_DESIGN
+              : REASON_NO_REFINEMENT,
+      };
     }
-    if (step === CAD_SUBSTEP_GUIDANCE && !hasFinalGuidance) {
+    if (step === CAD_SUBSTEP_GUIDANCE && roundState === "none") {
       return { kind: "locked", reason: REASON_NO_GUIDANCE };
     }
     return { kind: "navigate", target: CAD_SCREEN };
@@ -257,14 +290,31 @@ export function stepNav(state: TimelineNavState, step: number): StepNavAction {
 
   /* Steps 5-7 share the CAD screen. Opening it settles which sub-state
      is actually shown (the entry check reopens the picker if no design
-     is persisted, otherwise the calibrated/guided design loads). So from
-     the conversation the whole CAD arm is reachable behind the handoff,
-     but steps 6 and 7 additionally need a selected design — without one
-     the CAD view has nothing to calibrate or write guidance for. */
+     is persisted, otherwise the calibrated/guided design loads), so from
+     the conversation the whole CAD arm is reachable behind the handoff;
+     steps 6 and 7 then gate on the same run state as the on-CAD side. */
   if (step >= CAD_SUBSTEP_PICKER) {
     if (!handoffReady) return { kind: "locked", reason: REASON_NO_HANDOFF };
-    if (step >= CAD_SUBSTEP_CALIBRATION && !cadSelectionMade)
-      return { kind: "locked", reason: REASON_SELECT_DESIGN };
+    /* Steps 6/7 use the exact same conditions as the on-CAD branch —
+       the round's committed state rides along in roundState, so the
+       markers off-screen never reach further than the on-screen gates:
+       a design pick that starts a fresh round keeps both locked until
+       the run exists, and marker 7 opens the moment the round is
+       committed instead of when the document lands. */
+    if (step >= CAD_SUBSTEP_CALIBRATION && !afterCadRunExists) {
+      return {
+        kind: "locked",
+        reason:
+          roundState === "sealed"
+            ? REASON_REFINE_OTHER_DESIGN
+            : !cadSelectionMade
+              ? REASON_SELECT_DESIGN
+              : REASON_NO_REFINEMENT,
+      };
+    }
+    if (step === CAD_SUBSTEP_GUIDANCE && roundState === "none") {
+      return { kind: "locked", reason: REASON_NO_GUIDANCE };
+    }
     return { kind: "navigate", target: toScreen };
   }
 
@@ -309,20 +359,21 @@ export function timelineStepStates(
 /**
  * The CAD sub-state step shown by the timeline while on the CAD screen.
  * The picker (5) is shown until the model is being calibrated or ready;
- * calibration (6) while the design refines; guidance (7) once the final
- * document has landed.
+ * calibration (6) while the design refines; guidance (7) from the moment
+ * the round is committed — the document merely waits to fill the box.
  */
 export function cadStepFor(
   cadPhase: ForgePhase | null,
-  hasFinalGuidance: boolean,
+  roundState: TimelineRoundState,
 ): number {
   if (
     cadPhase === "calibrating" ||
     cadPhase === "ready" ||
     cadPhase === "finalizing"
   ) {
-    return hasFinalGuidance ? CAD_SUBSTEP_GUIDANCE : CAD_SUBSTEP_CALIBRATION;
+    return roundState === "none"
+      ? CAD_SUBSTEP_CALIBRATION
+      : CAD_SUBSTEP_GUIDANCE;
   }
   return CAD_SUBSTEP_PICKER;
 }
-

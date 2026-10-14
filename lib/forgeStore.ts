@@ -91,3 +91,46 @@ export function clearStoredDesignState(runId: string | null) {
   delete store[runId];
   writeDesignStore(store);
 }
+
+/**
+ * Persistent AfterForge refinement (stage-6) run per repair run, so
+ * revisiting the CAD workspace resumes the same conversation instead of
+ * bootstrapping a new run. `guidanceGenerated` flips once the running doc
+ * holds final repair guidance — re-entering after that starts a fresh
+ * refinement run (a new round over the finalized design).
+ */
+export const REFINEMENT_STORE_KEY = "repaircad.refinementRuns";
+
+export interface RefinementPersist {
+  runId: string;
+  guidanceGenerated: boolean;
+}
+
+function readRefinementStore(): Record<string, RefinementPersist> {
+  const raw = localStorage.getItem(REFINEMENT_STORE_KEY);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" &&
+      parsed !== null &&
+      !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+export function loadRefinementState(runId: string): RefinementPersist | null {
+  const stored = readRefinementStore()[runId];
+  return stored && typeof stored.runId === "string" ? stored : null;
+}
+
+export function storeRefinementState(
+  runId: string,
+  state: RefinementPersist,
+): void {
+  const stored = readRefinementStore();
+  stored[runId] = state;
+  localStorage.setItem(REFINEMENT_STORE_KEY, JSON.stringify(stored));
+}

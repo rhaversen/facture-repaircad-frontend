@@ -69,9 +69,9 @@ describe("hasUserTurn", () => {
 
 describe("runShowsProgress", () => {
   it("a runningDoc with entries counts as progress", () => {
-    expect(
-      runShowsProgress(run({ runningDoc: { repair_plan: "x" } })),
-    ).toBe(true);
+    expect(runShowsProgress(run({ runningDoc: { repair_plan: "x" } }))).toBe(
+      true,
+    );
   });
 
   it("a running run counts as progress", () => {
@@ -96,10 +96,7 @@ describe("screenForSelectedRun", () => {
 
   it("opens the chat for a run with progress even if messages came back empty", () => {
     expect(
-      screenForSelectedRun(
-        run({ runningDoc: { repair_plan: "x" } }),
-        [],
-      ),
+      screenForSelectedRun(run({ runningDoc: { repair_plan: "x" } }), []),
     ).toBe(CHAT_SCREEN);
   });
 
@@ -129,17 +126,13 @@ describe("deriveScreen", () => {
 
   it("requested intake stays without an active run (bootstrap path)", () => {
     expect(
-      deriveScreen(
-        state({ requestedScreen: 1, run: null, messages: [] }),
-      ),
+      deriveScreen(state({ requestedScreen: 1, run: null, messages: [] })),
     ).toBe(1);
   });
 
   it("requested intake stays for a greeting-only run", () => {
     expect(
-      deriveScreen(
-        state({ requestedScreen: 1, messages: [msg("assistant")] }),
-      ),
+      deriveScreen(state({ requestedScreen: 1, messages: [msg("assistant")] })),
     ).toBe(1);
   });
 
@@ -206,9 +199,10 @@ function nav(overrides: Partial<TimelineNavState> = {}): TimelineNavState {
     conversationReady: true,
     handoffReady: false,
     clarificationActive: false,
-    cadStep: CAD_SCREEN,
+    cadStep: 0,
     cadSelectionMade: false,
-    hasFinalGuidance: false,
+    afterCadRunExists: false,
+    roundState: "none",
     ...overrides,
   };
 }
@@ -220,7 +214,12 @@ const CONVERSATION =
 const CLARIFICATION = "Answer the clarification question before moving on.";
 const NO_HANDOFF = "No CAD draft yet — the conversation still needs to run.";
 const SELECT_DESIGN = "Select a design first.";
-const NO_GUIDANCE = "Repair guidance appears once calibration is finished.";
+const NO_REFINEMENT =
+  "Refine the design first — this round has no refinement run yet.";
+const REFINE_OTHER_DESIGN =
+  "Guidance belongs to the other design — refine the selected one first.";
+const NO_GUIDANCE =
+  "The repair guidance document arrives once the refinement round is committed and finished.";
 
 function expectNav(
   state: TimelineNavState,
@@ -266,11 +265,10 @@ describe("stepNav — conversation screen", () => {
 
   it("locks intake steps once the conversation started", () => {
     [1, 2, 3].forEach((step) =>
-      expectNav(
-        withConversation,
-        step,
-        { kind: "locked", reason: CONVERSATION },
-      ),
+      expectNav(withConversation, step, {
+        kind: "locked",
+        reason: CONVERSATION,
+      }),
     );
   });
 
@@ -285,11 +283,7 @@ describe("stepNav — conversation screen", () => {
 
   it("locks the CAD sub-steps until the first handoff exists", () => {
     [5, 6, 7].forEach((step) =>
-      expectNav(
-        withConversation,
-        step,
-        { kind: "locked", reason: NO_HANDOFF },
-      ),
+      expectNav(withConversation, step, { kind: "locked", reason: NO_HANDOFF }),
     );
   });
 
@@ -301,19 +295,37 @@ describe("stepNav — conversation screen", () => {
     );
   });
 
-  it("navigates to the CAD workspace for all sub-steps once a design is chosen", () => {
-    const ready = nav({ handoffReady: true, cadSelectionMade: true });
-    [5, 6, 7].forEach((step) =>
+  it("locks step 6 until the selected design's refinement run exists", () => {
+    /* A design was picked (round 1) but the run creation is still pending
+       — 6 must not be reachable off-screen in that beat, mirroring the
+       on-CAD gate. */
+    const picked = nav({ handoffReady: true, cadSelectionMade: true });
+    [6, 7].forEach((step) =>
+      expectNav(picked, step, { kind: "locked", reason: NO_REFINEMENT }),
+    );
+  });
+
+  it("navigates to the CAD workspace once the refinement round exists", () => {
+    const ready = nav({ handoffReady: true, afterCadRunExists: true });
+    [5, 6].forEach((step) =>
       expectNav(ready, step, { kind: "navigate", target: CAD_SCREEN }),
     );
-    /* Step 7's final-guidance gate is re-applied on the CAD screen
-       itself, so it stays navigable from off-screen even without guidance. */
-    const noGuidance = nav({
-      handoffReady: true,
-      cadSelectionMade: true,
-      hasFinalGuidance: false,
-    });
-    expectNav(noGuidance, 7, { kind: "navigate", target: CAD_SCREEN });
+    /* The round is not committed yet — marker 7 is still locked. */
+    expectNav(ready, 7, { kind: "locked", reason: NO_GUIDANCE });
+    /* Committing the round opens marker 7 immediately; the sealed
+       document merely confirms the state. */
+    [
+      nav({
+        handoffReady: true,
+        afterCadRunExists: true,
+        roundState: "generating",
+      }),
+      nav({
+        handoffReady: true,
+        afterCadRunExists: true,
+        roundState: "sealed",
+      }),
+    ].forEach((s) => expectNav(s, 7, { kind: "navigate", target: CAD_SCREEN }));
   });
 });
 
@@ -322,11 +334,7 @@ describe("stepNav — pending clarification", () => {
 
   it("locks every step except the conversation itself", () => {
     [1, 2, 3, 5, 6, 7].forEach((step) =>
-      expectNav(
-        waiting,
-        step,
-        { kind: "locked", reason: CLARIFICATION },
-      ),
+      expectNav(waiting, step, { kind: "locked", reason: CLARIFICATION }),
     );
   });
 
@@ -349,13 +357,15 @@ describe("stepNav — CAD workspace", () => {
     screen: CAD_SCREEN,
     cadStep: 6,
     cadSelectionMade: true,
+    afterCadRunExists: true,
     handoffReady: true,
   });
   const guidance = nav({
     screen: CAD_SCREEN,
     cadStep: 7,
     cadSelectionMade: true,
-    hasFinalGuidance: true,
+    afterCadRunExists: true,
+    roundState: "sealed",
     handoffReady: true,
   });
 
@@ -363,11 +373,7 @@ describe("stepNav — CAD workspace", () => {
     // The fixture conversation has started, so steps 1-3 lift into it —
     // they cannot be re-entered from the CAD workspace either.
     [1, 2, 3].forEach((step) =>
-      expectNav(
-        calibration,
-        step,
-        { kind: "locked", reason: CONVERSATION },
-      ),
+      expectNav(calibration, step, { kind: "locked", reason: CONVERSATION }),
     );
     // Only the conversation marker itself goes back to the chat.
     [calibration, guidance].forEach((s) =>
@@ -402,8 +408,36 @@ describe("stepNav — CAD workspace", () => {
     expectNav(picker, 7, { kind: "locked", reason: SELECT_DESIGN });
   });
 
-  it("locks step 7 until the final guidance exists", () => {
+  it("locks step 7 until the round is committed, then keeps it open", () => {
     expectNav(calibration, 7, { kind: "locked", reason: NO_GUIDANCE });
+    const committed = nav({
+      screen: CAD_SCREEN,
+      cadStep: 6,
+      cadSelectionMade: true,
+      afterCadRunExists: true,
+      roundState: "generating",
+      handoffReady: true,
+    });
+    expectNav(committed, 7, { kind: "navigate", target: CAD_SCREEN });
+    expectNav(guidance, 7, { kind: "noop" });
+  });
+
+  it("locks 6 and 7 briefly after a fresh design pick replaces a finished run", () => {
+    /* Guidance from round 1 is on file, but the new pick starts round 2;
+       until round 2's run exists, neither marker is reachable. */
+    const freshPick = nav({
+      screen: CAD_SCREEN,
+      cadStep: 5,
+      cadSelectionMade: true,
+      roundState: "sealed",
+      handoffReady: true,
+    });
+    [6, 7].forEach((step) =>
+      expectNav(freshPick, step, {
+        kind: "locked",
+        reason: REFINE_OTHER_DESIGN,
+      }),
+    );
   });
 
   it("navigates to the CAD screen for a reachable forward sub-state", () => {
@@ -411,6 +445,7 @@ describe("stepNav — CAD workspace", () => {
       screen: CAD_SCREEN,
       cadStep: 5,
       cadSelectionMade: true,
+      afterCadRunExists: true,
       handoffReady: true,
     });
     expectNav(picked, 6, { kind: "navigate", target: CAD_SCREEN });
@@ -468,21 +503,22 @@ describe("timelineStepStates", () => {
 
 describe("cadStepFor", () => {
   it("shows the picker before calibration starts", () => {
-    expect(cadStepFor(null, false)).toBe(5);
-    expect(cadStepFor("idle", false)).toBe(5);
-    expect(cadStepFor("choosing", false)).toBe(5);
-    expect(cadStepFor("error", false)).toBe(5);
+    expect(cadStepFor(null, "none")).toBe(5);
+    expect(cadStepFor("idle", "none")).toBe(5);
+    expect(cadStepFor("choosing", "none")).toBe(5);
+    expect(cadStepFor("error", "none")).toBe(5);
   });
 
   it("shows calibration while the design refines", () => {
-    expect(cadStepFor("calibrating", false)).toBe(6);
-    expect(cadStepFor("finalizing", false)).toBe(6);
-    expect(cadStepFor("ready", false)).toBe(6);
+    expect(cadStepFor("calibrating", "none")).toBe(6);
+    expect(cadStepFor("finalizing", "none")).toBe(6);
+    expect(cadStepFor("ready", "none")).toBe(6);
   });
 
-  it("shows guidance once the final document has landed", () => {
-    expect(cadStepFor("calibrating", true)).toBe(7);
-    expect(cadStepFor("ready", true)).toBe(7);
-    expect(cadStepFor("finalizing", true)).toBe(7);
+  it("shows guidance from the moment the round is committed", () => {
+    expect(cadStepFor("calibrating", "generating")).toBe(7);
+    expect(cadStepFor("calibrating", "sealed")).toBe(7);
+    expect(cadStepFor("ready", "sealed")).toBe(7);
+    expect(cadStepFor("finalizing", "sealed")).toBe(7);
   });
 });

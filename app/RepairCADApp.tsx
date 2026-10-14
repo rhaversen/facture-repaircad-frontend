@@ -11,7 +11,10 @@ import ChatScreen from "@/features/chat/ChatScreen";
 import { useRepairRun } from "@/hooks/useRepairRun";
 import { useIntake } from "@/hooks/useIntake";
 import { authUrl, getMe, logout } from "@/lib/auth";
-import { buildIntakeMessage, buildClarificationAnnotations } from "@/lib/intakeMessageUtils";
+import {
+  buildIntakeMessage,
+  buildClarificationAnnotations,
+} from "@/lib/intakeMessageUtils";
 import {
   deriveScreen,
   hasUserTurn,
@@ -27,6 +30,7 @@ import {
   CAD_SUBSTEP_CALIBRATION,
   CAD_SUBSTEP_GUIDANCE,
   type TimelineNavState,
+  type TimelineRoundState,
 } from "@/lib/runProgress";
 import { collectHandoffs } from "@/lib/handoffs";
 import { s2NodeId } from "@/lib/pipeline";
@@ -131,20 +135,24 @@ export default function RepairCADApp() {
   // owns markers 5/6/7 — 5 is gated by handoffReady, and 6/7 mirror this
   // real selection state instead of a placeholder.
   const [cadSelectionMade, setCadSelectionMade] = useState(false);
-  const [hasFinalGuidance, setHasFinalGuidance] = useState(false);
+  const [hasAfterCadRun, setHasAfterCadRun] = useState(false);
+  const [roundState, setRoundState] = useState<TimelineRoundState>("none");
   function handleCadStateChange(state: {
     cadSelectionMade: boolean;
-    hasFinalGuidance: boolean;
+    hasAfterCadRun: boolean;
+    roundState: TimelineRoundState;
   }) {
     setCadSelectionMade(state.cadSelectionMade);
-    setHasFinalGuidance(state.hasFinalGuidance);
+    setHasAfterCadRun(state.hasAfterCadRun);
+    setRoundState(state.roundState);
   }
   const activeRunId = runId ?? run?._id ?? null;
   /* A run switch starts fresh design state — the previous run's CAD
      selection must not enable markers 6/7 for the new run. */
   useEffect(() => {
     setCadSelectionMade(false);
-    setHasFinalGuidance(false);
+    setHasAfterCadRun(false);
+    setRoundState("none");
   }, [activeRunId]);
 
   const screen = deriveScreen({
@@ -181,12 +189,13 @@ export default function RepairCADApp() {
     clarificationActive: waitingForCaseClarification,
     /* The app shell only renders the timeline while screens 1-5 are up
        (screen 6 renders its own) — CadModelView fills the CAD sub-state
-       fields from Forge itself there. cadSelectionMade/hasFinalGuidance
+       fields from Forge itself there. cadSelectionMade/roundState
        are the real values reported up from CadModelView so the markers
        stay accurate from the conversation too. */
     cadStep: CAD_SCREEN,
     cadSelectionMade,
-    hasFinalGuidance,
+    afterCadRunExists: hasAfterCadRun,
+    roundState,
   };
   const { states: stepStates, reasons: stepReasons } = timelineStepStates(
     timelineState,
@@ -239,7 +248,8 @@ export default function RepairCADApp() {
 
     listRunsRef.current().then((existing) => {
       if (existing !== null && existing.length === 0) {
-        createRunRef.current()
+        createRunRef
+          .current()
           .then((created) => {
             registerLiveRun(created._id);
             setScreen(1);
@@ -319,10 +329,8 @@ export default function RepairCADApp() {
       return next;
     });
     try {
-      const {
-        messages: loadedMessages,
-        run: loadedRun,
-      } = await selectRun(selectedRunId);
+      const { messages: loadedMessages, run: loadedRun } =
+        await selectRun(selectedRunId);
       // Clear any earlier dismissal so a completed run still auto-advances.
       setHandoffDismissed(false);
       // Fresh runs are seeded with one assistant greeting, so "no user turn
@@ -344,7 +352,9 @@ export default function RepairCADApp() {
   const [clarificationSubmitting, setClarificationSubmitting] = useState(false);
   const [clarificationError, setClarificationError] = useState("");
 
-  async function handleSubmit(annotatedCopies: Record<string, { file: File; url: string }>) {
+  async function handleSubmit(
+    annotatedCopies: Record<string, { file: File; url: string }>,
+  ) {
     const intakeMessage = buildIntakeMessage({
       description: intake.description,
       photos: intake.photos,
@@ -376,10 +386,9 @@ export default function RepairCADApp() {
         clarification.annotations as never,
       );
       const message =
-        [
-          clarification.content.trim(),
-          ...annotationLines,
-        ].filter(Boolean).join("\n\n") ||
+        [clarification.content.trim(), ...annotationLines]
+          .filter(Boolean)
+          .join("\n\n") ||
         "I have attached the requested clarification photos.";
       await submitClarification({
         message,
@@ -404,8 +413,8 @@ export default function RepairCADApp() {
     return null;
   }
 
-  const shouldAutoGenerate = activeRunId !== null && liveRunIds.has(activeRunId);
-
+  const shouldAutoGenerate =
+    activeRunId !== null && liveRunIds.has(activeRunId);
 
   if (screen === RUN_LIST) {
     return (

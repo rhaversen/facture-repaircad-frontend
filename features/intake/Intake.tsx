@@ -41,9 +41,11 @@ export default function Intake({
     }
   }
 
+  const hasPhotos = photos.length > 0;
   const progress = {
     step,
-    backTo: [1, 2].filter((n) => n < step),
+    // Annotating needs photos; without any, the wizard goes 1 → 3.
+    backTo: (hasPhotos ? [1, 2] : [1]).filter((n) => n < step),
     onStep: (n: number) => setStep(n as 1 | 2),
   };
 
@@ -68,7 +70,7 @@ export default function Intake({
 
           <aside className="flex w-full shrink-0 flex-col lg:w-[400px]">
             <div className="flex items-baseline justify-between gap-3">
-              <h2>Add photos</h2>
+              <h2>Add photos (optional)</h2>
               <span className="text-sm text-[#7a828d]">
                 {photos.length}/{MAX_PHOTOS}
               </span>
@@ -119,8 +121,8 @@ export default function Intake({
             <button
               type="button"
               className="mt-6 w-full"
-              onClick={() => setStep(2)}
-              disabled={!description.trim() || photos.length === 0}
+              onClick={() => setStep(hasPhotos ? 2 : 3)}
+              disabled={!description.trim()}
             >
               Continue →
             </button>
@@ -156,6 +158,7 @@ export default function Intake({
           <p className="whitespace-pre-wrap">{description}</p>
 
           <h2 className="mt-8 mb-2.5 text-lg">Photos</h2>
+          {!hasPhotos && <p className="text-sm text-faint">No photos added</p>}
           {photos.map((photo) => {
             const own = annotations.filter((a) => a.photoId === photo.id);
             return (
@@ -192,8 +195,8 @@ export default function Intake({
           {error && <p className="error-box">{error}</p>}
 
           <div className="nav-row">
-            <button type="button" className="btn-secondary" onClick={() => setStep(2)}>
-              ← Back to annotations
+            <button type="button" className="btn-secondary" onClick={() => setStep(hasPhotos ? 2 : 1)}>
+              {hasPhotos ? "← Back to annotations" : "← Back"}
             </button>
             <button type="button" onClick={submit} disabled={submitting}>
               {submitting ? "Submitting…" : "Submit"}

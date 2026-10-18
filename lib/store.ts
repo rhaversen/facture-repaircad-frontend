@@ -38,6 +38,14 @@ export const storeActiveRun = (runId: string | null) => write(ACTIVE_RUN_KEY, ru
 export const loadDesigns = (runId: string): string[] =>
   read(DESIGNS_KEY, isDesignMap)?.[runId] ?? [];
 
+/** Drops everything remembered about a run that no longer exists. */
+export function forgetRun(runId: string) {
+  if (loadActiveRun() === runId) storeActiveRun(null);
+  const designs = { ...read(DESIGNS_KEY, isDesignMap) };
+  delete designs[runId];
+  write(DESIGNS_KEY, designs);
+}
+
 export function storeDesigns(runId: string, designIds: string[]) {
   write(DESIGNS_KEY, { ...read(DESIGNS_KEY, isDesignMap), [runId]: designIds });
 }

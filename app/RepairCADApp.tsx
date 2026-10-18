@@ -10,7 +10,7 @@ import RunList from "@/features/runs/RunList";
 import { useFlowRun } from "@/hooks/useFlowRun";
 import { authUrl, getMe, logout } from "@/lib/auth";
 import { createRun, resolvePipelines, sendMessage, stageOf, type Pipelines } from "@/lib/flow";
-import { loadActiveRun, storeActiveRun } from "@/lib/store";
+import { forgetRun, loadActiveRun, storeActiveRun } from "@/lib/store";
 
 /*
   The app is one open repair run (or none), and everything shown is derived
@@ -95,7 +95,14 @@ function OpenRun({
   pipelines: Pipelines;
   onAllRuns: () => void;
 }) {
-  const { run, hasUserTurn, error, refresh } = useFlowRun(runId);
+  const { run, missing, hasUserTurn, error, refresh } = useFlowRun(runId);
+
+  // A remembered run that was deleted meanwhile: forget it, back to the list.
+  useEffect(() => {
+    if (!missing) return;
+    forgetRun(runId);
+    onAllRuns();
+  }, [missing, runId, onAllRuns]);
 
   if (run === null) {
     return (

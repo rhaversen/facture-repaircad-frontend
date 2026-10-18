@@ -9,6 +9,7 @@ const POLL_MS = 3000;
 
 async function load(runId: string) {
   const run = await fetchRun(runId);
+  if (run === null) return null;
   // Only a run the pipeline has not touched yet needs its transcript: there
   // it alone tells an unsent intake from a sent one.
   const untouched = Object.keys(run.runningDoc ?? {}).length === 0;
@@ -25,12 +26,16 @@ async function load(runId: string) {
 */
 export function useFlowRun(runId: string | null) {
   const [state, setState] = useState<{ run: FlowRun; hasUserTurn: boolean } | null>(null);
+  // The id of a run the server says does not exist.
+  const [missingId, setMissingId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
     if (runId === null) return;
     try {
-      setState(await load(runId));
+      const next = await load(runId);
+      if (next === null) setMissingId(runId);
+      else setState(next);
       setError("");
     } catch (err) {
       console.error("Could not load run:", err);
@@ -52,12 +57,13 @@ export function useFlowRun(runId: string | null) {
 
   // A run fetched for another id is never handed out.
   const run = state !== null && state.run._id === runId ? state.run : null;
+  const missing = runId !== null && missingId === runId;
   const running = run?.status === "running";
   useEffect(() => {
-    if (!running && !error) return;
+    if (missing || (!running && !error)) return;
     const timer = setInterval(refresh, POLL_MS);
     return () => clearInterval(timer);
-  }, [running, error, refresh]);
+  }, [missing, running, error, refresh]);
 
-  return { run, hasUserTurn: state?.hasUserTurn ?? false, error, refresh };
+  return { run, missing, hasUserTurn: state?.hasUserTurn ?? false, error, refresh };
 }

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { loadActiveRun, loadDesigns, storeActiveRun, storeDesigns } from "@/lib/store";
+import { forgetRun, loadActiveRun, loadDesigns, storeActiveRun, storeDesigns } from "@/lib/store";
 
 describe("store", () => {
   beforeEach(() => localStorage.clear());
@@ -19,6 +19,16 @@ describe("store", () => {
     expect(loadDesigns("run-1")).toEqual(["a", "b"]);
     expect(loadDesigns("run-2")).toEqual(["c"]);
     expect(loadDesigns("run-3")).toEqual([]);
+  });
+
+  it("forgets a run that no longer exists, leaving the others", () => {
+    storeActiveRun("gone");
+    storeDesigns("gone", ["a"]);
+    storeDesigns("kept", ["b"]);
+    forgetRun("gone");
+    expect(loadActiveRun()).toBeNull();
+    expect(loadDesigns("gone")).toEqual([]);
+    expect(loadDesigns("kept")).toEqual(["b"]);
   });
 
   it("treats malformed storage as empty", () => {

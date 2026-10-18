@@ -57,9 +57,15 @@ export async function createRun(pipelineId: string): Promise<FlowRun> {
   return res.data.run;
 }
 
-export async function fetchRun(runId: string): Promise<FlowRun> {
-  const res = await flowApi.get(`/runs/${runId}`);
-  return res.data.run;
+/** Null when the run is gone (deleted, or not this user's). */
+export async function fetchRun(runId: string): Promise<FlowRun | null> {
+  try {
+    const res = await flowApi.get(`/runs/${runId}`);
+    return res.data.run;
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 404) return null;
+    throw err;
+  }
 }
 
 export async function fetchMessages(runId: string): Promise<FlowMessage[]> {

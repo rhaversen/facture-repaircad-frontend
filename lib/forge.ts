@@ -66,6 +66,20 @@ export async function fetchGeometry(designId: string): Promise<ArrayBuffer | nul
   return res.status === 204 ? null : (res.data as ArrayBuffer);
 }
 
+export interface StepContext {
+  /** The text the Forge agent itself reads before a step: the source, the
+      build's verdict, user-set values and the compiler's report. */
+  text: string;
+  /** The build's rendered views, as JPEG data URIs. */
+  images: { view: string; jpeg: string }[];
+}
+
+/* Built fresh by the server on every request, never stored. */
+export async function fetchStepContext(designId: string): Promise<StepContext> {
+  const res = await forgeApi.get(`/designs/${designId}/step-context`, { params: { images: true } });
+  return { text: res.data.text ?? "", images: res.data.images ?? [] };
+}
+
 export type StreamEvent =
   | { type: "running"; running: boolean }
   | { type: "geometry"; geometry: GeometrySummary }

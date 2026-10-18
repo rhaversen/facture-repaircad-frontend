@@ -27,6 +27,8 @@ export function useDesign(designId: string) {
   const [missing, setMissing] = useState(false);
   // Null until the stream has said whether a turn is live.
   const [running, setRunning] = useState<boolean | null>(null);
+  // Agent turns seen to finish since mount.
+  const [turnsDone, setTurnsDone] = useState(0);
   const [model, setModel] = useState<Group | null>(null);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState("");
@@ -69,12 +71,23 @@ export function useDesign(designId: string) {
     // Stays connected for the hook's life, reconnecting after drops; each
     // (re)connect re-reads the design so nothing missed while away is lost.
     async function follow() {
+      let live = false;
+      const settle = () => {
+        if (live) setTurnsDone((n) => n + 1);
+        live = false;
+        setRunning(false);
+      };
       while (!signal.aborted) {
         try {
           const stream = designStream(designId, signal);
           void sync().catch((err) => console.warn("Design sync failed:", err));
           for await (const event of stream) {
-            if (event.type === "running") setRunning(event.running);
+            if (event.type === "running") {
+              if (event.running) {
+                live = true;
+                setRunning(true);
+              } else settle();
+            }
             if (event.type === "parameters") {
               setDesign((d) => (d ? { ...d, parameters: event.parameters } : d));
             }
@@ -85,7 +98,7 @@ export function useDesign(designId: string) {
               );
             }
             if (event.type === "end") {
-              setRunning(false);
+              settle();
               void sync().catch((err) => console.warn("Design sync failed:", err));
             }
           }
@@ -132,5 +145,5 @@ export function useDesign(designId: string) {
 
   const guides: Guide[] = design?.geometry?.guides ?? [];
   const parameters: Parameter[] = (design?.parameters ?? []).filter((p) => p.min !== p.max);
-  return { design, missing, running, model, guides, parameters, applying, error, setParameter, send };
+  return { design, missing, running, turnsDone, model, guides, parameters, applying, error, setParameter, send };
 }

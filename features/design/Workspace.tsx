@@ -11,14 +11,16 @@ import { useDesign } from "@/hooks/useDesign";
 import { useFlowRun } from "@/hooks/useFlowRun";
 import { downloadBlob, exportScene } from "@/lib/exportModel";
 import { createRun, resolvePipelines, sendMessage } from "@/lib/flow";
-import { errorText } from "@/lib/forge";
-import { bootstrapMessage, guidanceRequest } from "@/lib/refinement";
+import { errorText, fetchStepContext } from "@/lib/forge";
+import { bootstrapMessage, guidanceRequest, viewSheet } from "@/lib/refinement";
 
 /*
-  Steps 6 and 7 for one picked design. Mounting starts a fresh AfterForge run
-  for it; every forge_instruction that run produces is sent straight to this
-  design, and parameter changes are applied to it directly. The final view
-  asks the same run for the repair guidance.
+  Steps 6 and 7 for one picked design. The AfterForge assistant is started
+  fresh, with Forge's current step context for the design, on entry and again
+  after every Forge turn finishes, so it always talks about the design as it
+  now is. Each forge_instruction it produces is sent straight to this design;
+  while Forge works, the chat and the parameters are locked. The final view
+  asks the current assistant for the repair guidance.
 */
 export default function Workspace({
   designId,
@@ -36,41 +38,54 @@ export default function Workspace({
   onFinal: () => void;
 }) {
   const design = useDesign(designId);
-  const { model, running, applying, parameters, send } = design;
+  const { model, running, turnsDone, applying, parameters, send } = design;
+  const busy = running !== false || applying;
 
-  // ── The AfterForge conversation for this visit ──
-  const [refinementId, setRefinementId] = useState<string | null>(null);
+  // ── The AfterForge assistant, one per settled design state ──
+  const [assistant, setAssistant] = useState<{ runId: string; forTurn: number } | null>(null);
   const [refinementError, setRefinementError] = useState("");
-  const started = useRef(false);
+  const startedFor = useRef(-1);
   const loaded = design.design !== null;
   useEffect(() => {
-    if (!loaded || started.current) return;
-    started.current = true;
+    if (!loaded || busy || startedFor.current === turnsDone) return;
+    startedFor.current = turnsDone;
     (async () => {
+      const stepContext = await fetchStepContext(designId);
+      const sheet = await viewSheet(stepContext.images);
       const run = await createRun((await resolvePipelines()).refinement);
       await sendMessage(
         run._id,
-        bootstrapMessage({ designId, handoff, handoffVariant, designIntent, parameters }),
+        bootstrapMessage({ designId, handoff, handoffVariant, designIntent, parameters, stepContext }),
+        sheet ? [sheet] : [],
       );
-      setRefinementId(run._id);
+      // A Forge turn that finished meanwhile already asked for a newer one.
+      if (startedFor.current !== turnsDone) return;
+      setAssistant({ runId: run._id, forTurn: turnsDone });
+      setRefinementError("");
     })().catch((err) => {
       console.error("Could not start the refinement assistant:", err);
       setRefinementError(errorText(err, "Could not start the refinement assistant."));
     });
-  }, [loaded, designId, handoff, handoffVariant, designIntent, parameters]);
+  }, [loaded, busy, turnsDone, designId, handoff, handoffVariant, designIntent, parameters]);
 
+  function restartAssistant() {
+    startedFor.current = -1;
+    setRefinementError("");
+  }
+
+  const refinementId = assistant?.forTurn === turnsDone ? assistant.runId : null;
   const refinement = useFlowRun(refinementId);
   const doc = refinement.run?.runningDoc;
   const refinementIdle = refinement.run !== null && refinement.run.status !== "running";
 
-  // Each new instruction goes to the design once, after any turn it is busy with.
+  // Each new instruction goes to the design once.
   const instruction = doc?.forge_instruction?.trim() ?? "";
   const applied = useRef("");
   useEffect(() => {
-    if (instruction === "" || instruction === applied.current || running !== false) return;
+    if (instruction === "" || instruction === applied.current || busy) return;
     applied.current = instruction;
     void send(instruction);
-  }, [instruction, running, send]);
+  }, [instruction, busy, send]);
 
   // ── Guides ──
   const [activeGuide, setActiveGuide] = useState<string | null>(null);
@@ -102,7 +117,6 @@ export default function Workspace({
       setRequesting(false);
     }
   }
-  const busy = running !== false || applying;
   const canFinish = model !== null && !busy && refinementIdle && !requesting;
 
   if (final) {
@@ -215,13 +229,32 @@ export default function Workspace({
             Ask to change the model, clarify a measurement, or inspect the current repair design.
           </p>
         </div>
-        {refinementError ? (
-          <p className="error-box m-4">{refinementError}</p>
-        ) : refinementId ? (
-          <FlowChat runId={refinementId} title="CAD refinement" />
-        ) : (
-          <p className="p-4.5 text-sm text-muted-2">Starting the refinement assistant…</p>
-        )}
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          {refinementId && <FlowChat runId={refinementId} title="CAD refinement" />}
+          {refinementError ? (
+            <div className="m-4">
+              <p className="error-box">{refinementError}</p>
+              <button type="button" className="btn-secondary mt-3" onClick={restartAssistant}>
+                Try again
+              </button>
+            </div>
+          ) : (
+            (busy || !refinementId) && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/90 p-6 text-center text-sm text-muted-2">
+                {(running || !refinementId) && <div className="cad-spinner" />}
+                <p className="m-0">
+                  {running
+                    ? "Forge is updating the design. The assistant restarts with the new model when it is done."
+                    : applying
+                      ? "Applying your change…"
+                      : model === null
+                        ? "Loading the model…"
+                        : "Starting the refinement assistant…"}
+                </p>
+              </div>
+            )
+          )}
+        </div>
       </aside>
     </div>
   );

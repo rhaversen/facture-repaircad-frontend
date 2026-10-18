@@ -11,8 +11,8 @@ describe("photosSent", () => {
           role: "user",
           content: [
             { type: "text", text: "intake" },
-            { type: "user-image", imageId: "a" },
-            { type: "user-image", imageId: "b" },
+            { type: "file", mediaType: "image/jpeg", data: "data:image/jpeg;base64,AA" },
+            { type: "file", mediaType: "image/jpeg", data: "data:image/jpeg;base64,AB" },
           ],
         },
         { role: "assistant", content: [{ type: "user-image", imageId: "x" }] },

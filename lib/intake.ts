@@ -45,12 +45,14 @@ export function intakeMessage(
   return lines.join("\n");
 }
 
-/** How many photos the user has already sent on the run. */
+/** How many photos the user has already sent on the run. GET /messages
+    hydrates each stored image into a `file` part; a raw `user-image` marker
+    counts too. */
 export function photosSent(messages: FlowMessage[]): number {
   return messages
     .filter((m) => m.role === "user" && Array.isArray(m.content))
     .flatMap((m) => m.content as MessageContentPart[])
-    .filter((part) => part?.type === "user-image").length;
+    .filter((part) => part?.type === "file" || part?.type === "user-image").length;
 }
 
 /** A clarification turn: the typed answer plus the photos' annotation names. */

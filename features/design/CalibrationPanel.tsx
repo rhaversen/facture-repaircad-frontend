@@ -2,7 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Parameter } from "@/lib/types";
-import { formatParamName } from "@/lib/forgeParams";
+
+/** "wall_thickness" → "Wall Thickness". */
+const formatName = (name: string) =>
+	name
+		.split(/[_\s]+/)
+		.filter(Boolean)
+		.map((word) => word[0].toUpperCase() + word.slice(1))
+		.join(" ");
 
 /** One parameter row: description line with the guide control and a reset
  *  control, then a slider across the allowed range with a numeric companion
@@ -14,8 +21,8 @@ import { formatParamName } from "@/lib/forgeParams";
 function ParameterRow({
 	parameter,
 	disabled,
-	detail,
 	onConfirm,
+	onReset,
 	active,
 	hasGuides,
 	onSelect,
@@ -23,8 +30,8 @@ function ParameterRow({
 }: {
 	parameter: Parameter;
 	disabled: boolean;
-	detail: string | null;
 	onConfirm: (value: number) => void;
+	onReset: () => void;
 	active: boolean;
 	hasGuides: boolean;
 	onSelect: (name: string | null) => void;
@@ -115,7 +122,7 @@ function ParameterRow({
 			    rows keep a stable label line. */}
 			<div className="flex items-center justify-between gap-2">
 				<span className="min-w-0 truncate text-[13px] leading-snug text-[#30343a]" title={parameter.description}>
-					{formatParamName(parameter.name)}
+					{formatName(parameter.name)}
 				</span>
 				<span className="flex shrink-0 items-center justify-end gap-2">
 					{parameter.set ? (
@@ -124,7 +131,7 @@ function ParameterRow({
 							onClick={() => {
 								setDraft(null);
 								setPending(parameter.default);
-								onConfirm(parameter.default);
+								onReset();
 							}}
 							disabled={disabled}
 							className="rounded bg-transparent px-1 text-[11px] text-[#616975] transition-colors hover:bg-[#eef2fb] hover:text-[#20242a] disabled:opacity-40"
@@ -208,87 +215,62 @@ function ParameterRow({
 					{unit.trim()}
 				</span>
 			</div>
-			{detail !== null ? (
-				<p className="text-[11px] text-red-500">{detail}</p>
-			) : null}
 		</div>
 	);
 }
 
-interface CalibrationPanelProps {
-	/** Layout hint from the parent row — e.g. the calibration column's
-	 *  equal one-third width on wide screens. */
-	className?: string;
-	parameters: Parameter[];
-	confirmedValues: Record<string, number>;
-	settingParam: string | null;
-	onConfirm: (parameter: Parameter, value: number) => void;
-	onFinish: () => void;
-	/** The parameter whose guides are currently shown (null = none). */
-	activeParam: string | null;
-	/** Selects a parameter's guides (deselecting all others) or, with
-	 *  null, deselects everything. */
-	onSelectGuides: (name: string | null) => void;
-	/** Reframes the viewport on a parameter's guide (Option B camera).
-	 *  Fired only by the rows' "show guide" button. */
-	onShowGuideCamera?: (name: string) => void;
-	guidesAvailable: (name: string) => boolean;
-}
-
-/** The calibrate panel: every declared parameter in one scrollable list,
- *  with per-value commit semantics (slider on release, typed value via
- *  OK/Enter/blur), unit display, per-value reset and a row-level
- *  show-guide control on the label line. The footer button renders the
- *  final model. */
+/** Every calibratable parameter in one scrollable list. Slider changes apply
+ *  on release, typed values on OK/Enter, and reset returns a value to its
+ *  default. Hovering a row shows its guides; "show guide" also frames them. */
 export default function CalibrationPanel({
-	className,
 	parameters,
-	confirmedValues,
-	settingParam,
-	onConfirm,
-	onFinish,
-	activeParam,
-	onSelectGuides,
-	onShowGuideCamera,
-	guidesAvailable,
-}: CalibrationPanelProps) {
+	disabled,
+	onChange,
+	activeGuide,
+	onSelectGuide,
+	onShowGuide,
+	hasGuides,
+	footer,
+}: {
+	parameters: Parameter[];
+	disabled: boolean;
+	/** A new value for a parameter; null resets it to its default. */
+	onChange: (name: string, value: number | null) => void;
+	activeGuide: string | null;
+	onSelectGuide: (name: string | null) => void;
+	onShowGuide: (name: string) => void;
+	hasGuides: (name: string) => boolean;
+	footer: React.ReactNode;
+}) {
 	return (
-		<div className={`flex w-full flex-col gap-2.5 self-stretch rounded-xl bg-[#f7f8fa] p-3 ${className ?? ""}`}>
+		<div className="flex w-full min-w-0 flex-col gap-2.5 self-stretch rounded-xl bg-surface p-3 lg:flex-1">
 			<div>
-				<h2 className="mb-1 text-[15px] font-semibold">
-					Calibrate the model
-				</h2>
-				<p className="text-[12px] leading-[1.45] text-[#616975]">
-					Set how the parts fit together
-				</p>
+				<h2 className="mb-1 text-[15px]">Calibrate the model</h2>
+				<p className="text-[12px] leading-[1.45] text-muted">Set how the parts fit together</p>
 			</div>
 			<div className="flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
+				{parameters.length === 0 && (
+					<p className="text-[13px] text-muted">This design has no adjustable parameters.</p>
+				)}
 				{parameters.map((parameter) => (
 					<ParameterRow
 						key={parameter.name}
 						parameter={parameter}
-						disabled={settingParam !== null}
-						detail={null}
-						onConfirm={(value) => onConfirm(parameter, value)}
-						active={activeParam === parameter.name}
-						hasGuides={guidesAvailable(parameter.name)}
-						onSelect={onSelectGuides}
-						onShowGuideCamera={onShowGuideCamera}
+						disabled={disabled}
+						onConfirm={(value) => onChange(parameter.name, value)}
+						onReset={() => onChange(parameter.name, null)}
+						active={activeGuide === parameter.name}
+						hasGuides={hasGuides(parameter.name)}
+						onSelect={onSelectGuide}
+						onShowGuideCamera={onShowGuide}
 					/>
 				))}
 			</div>
 			<div className="flex items-center justify-between gap-2 pt-0.5">
-				<span className="text-[12px] text-[#616975]">
-					{
-						parameters.filter(
-							(parameter) => confirmedValues[parameter.name] !== undefined,
-						).length
-					}{" "}
-					of {parameters.length} set
+				<span className="text-[12px] text-muted">
+					{parameters.filter((p) => p.set).length} of {parameters.length} set
 				</span>
-				<button type="button" onClick={onFinish}>
-					OK — render final model
-				</button>
+				{footer}
 			</div>
 		</div>
 	);

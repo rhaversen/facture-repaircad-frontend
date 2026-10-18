@@ -110,6 +110,26 @@
     @apply bg-transparent px-2.5 py-1.5 text-[13px] text-muted hover:bg-[#f1f2f4];
   }
 
+  .btn-outline {
+    @apply flex cursor-pointer items-center justify-center rounded-[10px] border border-brand bg-white px-4.5 py-3 font-semibold text-brand hover:bg-[#f6f8ff];
+  }
+
+  .btn-link {
+    @apply bg-transparent px-0 font-medium text-[#a22c2c] hover:bg-transparent hover:underline;
+  }
+
+  .intro {
+    @apply mb-9 text-[17px] leading-relaxed text-muted;
+  }
+
+  .nav-row {
+    @apply mt-9 flex justify-between gap-4 max-[640px]:flex-col-reverse;
+  }
+
+  .error-box {
+    @apply mt-4 rounded-lg bg-[#fff0f0] px-3.5 py-3 text-sm text-[#a22c2c];
+  }
+
   .btn-utility {
     @apply bg-transparent px-2 py-1 text-[11px] text-[#a7adba] hover:bg-[#f1f2f4] hover:text-ink-soft;
   }

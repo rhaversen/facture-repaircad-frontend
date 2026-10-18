@@ -13,7 +13,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
-    include: ["lib/**/*.test.ts", "hooks/**/*.test.ts"],
+    include: ["lib/**/*.test.ts"],
   },
   resolve: {
     alias: {

@@ -261,7 +261,39 @@ function CameraFit({ model }: { model: THREE.Object3D }) {
 export interface GuideFrameRequest {
 	center: [number, number, number];
 	radius: number;
+	/** Look along this (an angle guide's plane normal)… */
+	normal?: [number, number, number];
+	/** …or from a direction perpendicular to this (a distance guide's line). */
+	axis?: [number, number, number];
 	nonce: number;
+}
+
+/* The direction from the guide to the camera that shows the guide
+   square-on, as close to the current view as that allows, so the camera
+   turns as little as possible. */
+function facingDirection(frame: GuideFrameRequest, current: THREE.Vector3): THREE.Vector3 {
+	const center = new THREE.Vector3(...frame.center);
+	const outward =
+		center.lengthSq() > 1e-12 ? center.normalize() : new THREE.Vector3(1, 0.55, 1.3).normalize();
+	const view = current.lengthSq() > 1e-12 ? current.clone().normalize() : outward;
+	let u: THREE.Vector3;
+	if (frame.normal) {
+		const n = new THREE.Vector3(...frame.normal).normalize();
+		u = n.dot(view) >= 0 ? n : n.negate();
+	} else if (frame.axis) {
+		const a = new THREE.Vector3(...frame.axis).normalize();
+		const perpendicular = (v: THREE.Vector3) => v.clone().addScaledVector(a, -v.dot(a));
+		u = perpendicular(view);
+		if (u.lengthSq() < 1e-6) u = perpendicular(outward);
+		if (u.lengthSq() < 1e-6) u = perpendicular(new THREE.Vector3(0, 0, 1));
+		if (u.lengthSq() < 1e-6) u = perpendicular(new THREE.Vector3(1, 0, 0));
+		u.normalize();
+	} else {
+		u = outward;
+	}
+	// Straight up or down leaves the orbit's azimuth undefined; tilt a hair.
+	if (Math.abs(u.y) > 0.999) u.add(new THREE.Vector3(0, 0, 0.02)).normalize();
+	return u;
 }
 
 /* Seconds for the eased glide between guide frame positions. */
@@ -318,10 +350,7 @@ function GuideReframe({
 		appliedNonce.current = frame.nonce;
 
 		const center = new THREE.Vector3(...frame.center);
-		const u =
-			center.lengthSq() > 1e-12
-				? center.clone().normalize()
-				: new THREE.Vector3(1, 0.55, 1.3).normalize();
+		const u = facingDirection(frame, camera.position.clone().sub(controls.target));
 
 		const vHalf = ((camera.fov / 2) * Math.PI) / 180;
 		const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
@@ -374,8 +403,18 @@ function GuideReframe({
 			(performance.now() - active.start) / GUIDE_FRAME_DURATION_MS,
 		);
 		const k = easeInOutCubic(t);
-		camera.position.lerpVectors(active.fromPos, active.toPos, k);
+		// Swing the view direction around the target rather than cutting
+		// straight across, which could pass through the model.
 		controls.target.lerpVectors(active.fromTarget, active.toTarget, k);
+		const fromOffset = active.fromPos.clone().sub(active.fromTarget);
+		const toOffset = active.toPos.clone().sub(active.toTarget);
+		const turn = new THREE.Quaternion()
+			.setFromUnitVectors(fromOffset.clone().normalize(), toOffset.clone().normalize());
+		const offset = fromOffset
+			.normalize()
+			.applyQuaternion(new THREE.Quaternion().slerp(turn, k))
+			.multiplyScalar(THREE.MathUtils.lerp(active.fromPos.distanceTo(active.fromTarget), toOffset.length(), k));
+		camera.position.copy(controls.target).add(offset);
 		controls.update();
 		if (t >= 1) glide.current = null;
 	});

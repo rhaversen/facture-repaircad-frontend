@@ -39,8 +39,15 @@ export const DESIGN_TO_DISPLAY = new THREE.Euler(-Math.PI / 2, 0, 0);
  *  point (the span mid-point of a distance guide, the vertex of an angle
  *  guide) and `radius` is the distance from that anchor to the farthest
  *  other endpoint, padded so the line's own markers — arrowheads and butt
- *  disks — clear the viewport edge after the fit. */
-export function guideFrameBox(guide: Guide): { center: THREE.Vector3; radius: number } {
+ *  disks — clear the viewport edge after the fit. `facing` says how to look
+ *  at the guide square-on, so it shows at its full width: along `normal`
+ *  (an angle's plane), or from anywhere perpendicular to `axis` (a
+ *  distance's line). */
+export function guideFrameBox(guide: Guide): {
+	center: THREE.Vector3;
+	radius: number;
+	facing: { normal: THREE.Vector3 } | { axis: THREE.Vector3 };
+} {
 	// The rotation preserves lengths, so span distances equal the
 	// design-space measurements either way.
 	const toDisplay = (end: GuideEnd) => new THREE.Vector3(...end.world).applyEuler(DESIGN_TO_DISPLAY);
@@ -48,7 +55,14 @@ export function guideFrameBox(guide: Guide): { center: THREE.Vector3; radius: nu
 	const to = toDisplay(guide.to);
 	const anchor = guide.kind === "angle" ? toDisplay(guide.vertex) : from.clone().add(to).multiplyScalar(0.5);
 	const radius = Math.max(from.distanceTo(anchor), to.distanceTo(anchor));
-	return { center: anchor, radius: radius * 1.2 };
+	const normal =
+		guide.kind === "angle" ? from.clone().sub(anchor).cross(to.clone().sub(anchor)) : null;
+	// A degenerate (straight) angle has no plane; face its line instead.
+	const facing =
+		normal !== null && normal.lengthSq() > 1e-12
+			? { normal: normal.normalize() }
+			: { axis: to.clone().sub(from).normalize() };
+	return { center: anchor, radius: radius * 1.2, facing };
 }
 
 export interface GuidesOverlay {

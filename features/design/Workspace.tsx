@@ -97,6 +97,9 @@ export default function Workspace({
     setGuideFrame((prev) => ({
       center: frame.center.toArray(),
       radius: frame.radius,
+      ...("normal" in frame.facing
+        ? { normal: frame.facing.normal.toArray() }
+        : { axis: frame.facing.axis.toArray() }),
       nonce: (prev?.nonce ?? 0) + 1,
     }));
   }

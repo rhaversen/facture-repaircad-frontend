@@ -9,6 +9,17 @@ const boxStyle = (box: NormalizedBox) => ({
   height: `${box.height * 100}%`,
 });
 
+/* A box's label sits on its top edge and wraps upward, anchored on whichever
+   side of the box leaves it more room before the photo's edge. */
+function labelStyle(box: NormalizedBox): React.CSSProperties {
+  const bottom = `${(1 - box.y) * 100}%`;
+  const roomRight = 1 - box.x;
+  const roomLeft = box.x + box.width;
+  return roomRight >= roomLeft
+    ? { bottom, left: `${box.x * 100}%`, maxWidth: `${roomRight * 100}%` }
+    : { bottom, right: `${(1 - roomLeft) * 100}%`, maxWidth: `${roomLeft * 100}%` };
+}
+
 /*
   A photo with its annotation boxes drawn over it in normalized (0–1)
   coordinates. With pointer handlers it is the drawing surface; without, a
@@ -56,14 +67,16 @@ export default function AnnotationCanvas({
           key={annotation.id}
           className="pointer-events-none absolute border-[3px]"
           style={{ borderColor: annotation.color, ...boxStyle(annotation.box) }}
+        />
+      ))}
+      {annotations.map((annotation) => (
+        <span
+          key={annotation.id}
+          className="pointer-events-none absolute px-1.5 py-0.5 text-xs wrap-break-word text-white"
+          style={{ background: annotation.color, ...labelStyle(annotation.box) }}
         >
-          <span
-            className="absolute top-0 left-0 -translate-y-full px-1.5 py-0.5 text-xs whitespace-nowrap text-white"
-            style={{ background: annotation.color }}
-          >
-            {annotation.label || "Unnamed"}
-          </span>
-        </div>
+          {annotation.label || "Unnamed"}
+        </span>
       ))}
       {draftBox && (
         <div

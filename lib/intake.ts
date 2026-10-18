@@ -82,6 +82,38 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   });
 }
 
+/* Greedy word wrap to `width`; a word wider than the line gets a line of
+   its own and is broken by character. */
+function wrapText(context: CanvasRenderingContext2D, text: string, width: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  const push = (word: string) => {
+    const next = line ? `${line} ${word}` : word;
+    if (context.measureText(next).width <= width) {
+      line = next;
+      return;
+    }
+    if (line) lines.push(line);
+    line = "";
+    if (context.measureText(word).width <= width) {
+      line = word;
+      return;
+    }
+    let part = "";
+    for (const char of word) {
+      if (part && context.measureText(part + char).width > width) {
+        lines.push(part);
+        part = "";
+      }
+      part += char;
+    }
+    line = part;
+  };
+  for (const word of text.split(/\s+/).filter(Boolean)) push(word);
+  if (line) lines.push(line);
+  return lines.length > 0 ? lines : [text];
+}
+
 /* The photo with its boxes and labels burned in, as the JPEG that is uploaded
    (the model sees the marks, not just the coordinates in the message). */
 async function annotatedFile(photo: Photo, annotations: Annotation[]): Promise<File> {
@@ -103,16 +135,26 @@ async function annotatedFile(photo: Photo, annotations: Annotation[]): Promise<F
   for (const annotation of annotations.filter((a) => a.photoId === photo.id)) {
     const x = annotation.box.x * canvas.width;
     const y = annotation.box.y * canvas.height;
+    const right = x + annotation.box.width * canvas.width;
     context.strokeStyle = annotation.color;
-    context.strokeRect(x, y, annotation.box.width * canvas.width, annotation.box.height * canvas.height);
+    context.strokeRect(x, y, right - x, annotation.box.height * canvas.height);
 
-    const label = annotationLabel(annotation);
-    const labelHeight = fontSize + padding * 2;
-    const labelY = y - labelHeight < 0 ? y : y - labelHeight;
+    // The label wraps upward from the box's top edge, on the side of the box
+    // with more room, as the on-screen preview draws it.
+    const anchorLeft = canvas.width - x >= right;
+    const room = (anchorLeft ? canvas.width - x : right) - padding * 2;
+    const lines = wrapText(context, annotationLabel(annotation), room);
+    const lineHeight = fontSize * 1.2;
+    const width = Math.max(...lines.map((line) => context.measureText(line).width)) + padding * 2;
+    const height = lines.length * lineHeight + padding * 2;
+    const left = anchorLeft ? x : right - width;
+    const top = Math.max(0, y - height);
     context.fillStyle = annotation.color;
-    context.fillRect(x, labelY, context.measureText(label).width + padding * 2, labelHeight);
+    context.fillRect(left, top, width, height);
     context.fillStyle = "#ffffff";
-    context.fillText(label, x + padding, labelY + labelHeight / 2);
+    lines.forEach((line, index) => {
+      context.fillText(line, left + padding, top + padding + lineHeight * (index + 0.5));
+    });
   }
 
   const blob = await new Promise<Blob | null>((resolve) =>

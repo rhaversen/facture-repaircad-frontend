@@ -6,6 +6,7 @@ import Page from "@/components/Page";
 import ClarificationForm from "./ClarificationForm";
 import FlowChat from "./FlowChat";
 import { fetchMessages } from "@/lib/flow";
+import { MAX_PHOTOS, photosSent } from "@/lib/intake";
 import { describeMessageContent } from "@/lib/messageContent";
 
 /*
@@ -41,22 +42,31 @@ function Clarification({
   runId: string;
   onSubmit: (message: string, files: File[]) => Promise<void>;
 }) {
-  const [question, setQuestion] = useState<string | null>(null);
+  const [context, setContext] = useState<{ question: string; sent: number } | null>(null);
 
-  // The question is the pipeline's latest assistant turn.
+  // The question is the pipeline's latest assistant turn; the photos already
+  // sent count against the repair's photo budget.
   useEffect(() => {
     let cancelled = false;
     fetchMessages(runId)
       .then((messages) => {
         const last = messages.findLast((m) => m.role === "assistant");
-        if (!cancelled) setQuestion(describeMessageContent(last?.content));
+        if (!cancelled) {
+          setContext({ question: describeMessageContent(last?.content), sent: photosSent(messages) });
+        }
       })
-      .catch(() => !cancelled && setQuestion(""));
+      .catch(() => !cancelled && setContext({ question: "", sent: 0 }));
     return () => {
       cancelled = true;
     };
   }, [runId]);
 
-  if (question === null) return <p className="text-faint">Loading the question…</p>;
-  return <ClarificationForm question={question} onSubmit={onSubmit} />;
+  if (context === null) return <p className="text-faint">Loading the question…</p>;
+  return (
+    <ClarificationForm
+      question={context.question}
+      photoLimit={Math.max(0, MAX_PHOTOS - context.sent)}
+      onSubmit={onSubmit}
+    />
+  );
 }

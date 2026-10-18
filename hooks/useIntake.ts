@@ -19,7 +19,7 @@ const boxBetween = (a: Point, b: Point): NormalizedBox => ({
   clarification form. Releasing a drag saves the box at once; it is named
   afterwards in the annotation list.
 */
-export function useIntake() {
+export function useIntake(limit = MAX_PHOTOS) {
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -30,7 +30,7 @@ export function useIntake() {
   const activePhoto = photos.find((p) => p.id === activeId) ?? photos[0] ?? null;
 
   function addPhotos(files: File[]) {
-    const added = files.slice(0, MAX_PHOTOS - photos.length).map((file) => ({
+    const added = files.slice(0, Math.max(0, limit - photos.length)).map((file) => ({
       id: crypto.randomUUID(),
       file,
       previewUrl: URL.createObjectURL(file),

@@ -12,12 +12,15 @@ import { annotatedFiles, clarificationMessage } from "@/lib/intake";
 */
 export default function ClarificationForm({
   question,
+  photoLimit,
   onSubmit,
 }: {
   question: string;
+  /** Photos still allowed on this repair. */
+  photoLimit: number;
   onSubmit: (message: string, files: File[]) => Promise<void>;
 }) {
-  const intake = useIntake();
+  const intake = useIntake(photoLimit);
   const { photos, annotations } = intake;
   const [answer, setAnswer] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -72,19 +75,26 @@ export default function ClarificationForm({
         Upload the additional views requested. You can optionally mark important parts of each photo.
       </p>
       <div className="mt-2 flex flex-wrap items-center justify-end gap-3">
-        <label className="btn-outline my-0">
-          Attach photos
-          <input
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            onChange={(event) => {
-              intake.addPhotos(Array.from(event.target.files ?? []));
-              event.target.value = "";
-            }}
-          />
-        </label>
+        <span className="text-sm text-muted-2">
+          {photoLimit === 0
+            ? "This repair already has the maximum number of photos."
+            : `${photos.length}/${photoLimit} photos`}
+        </span>
+        {photos.length < photoLimit && (
+          <label className="btn-outline my-0">
+            Attach photos
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                intake.addPhotos(Array.from(event.target.files ?? []));
+                event.target.value = "";
+              }}
+            />
+          </label>
+        )}
         <button type="submit" disabled={submitting || empty}>
           {submitting ? "Sending…" : "Continue"}
         </button>

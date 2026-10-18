@@ -1,9 +1,10 @@
-import type { Annotation, Photo, Unit } from "./types";
+import type { Annotation, FlowMessage, MessageContentPart, Photo, Unit } from "./types";
 
 export const UNITS: Unit[] = ["mm", "cm", "in"];
 
-/* Matches the flow backend's per-upload image cap. */
-export const MAX_PHOTOS = 4;
+/* Photos per repair, across the intake and every clarification. It is also
+   the flow backend's per-message cap, so any one turn always fits. */
+export const MAX_PHOTOS = 10;
 
 const COLORS = ["#2c67d7", "#d64545", "#2f8f64", "#d9851b", "#6b5bd2", "#d2b01e", "#c2379b", "#1f9aa8"];
 
@@ -44,6 +45,14 @@ export function intakeMessage(
   return lines.join("\n");
 }
 
+/** How many photos the user has already sent on the run. */
+export function photosSent(messages: FlowMessage[]): number {
+  return messages
+    .filter((m) => m.role === "user" && Array.isArray(m.content))
+    .flatMap((m) => m.content as MessageContentPart[])
+    .filter((part) => part?.type === "user-image").length;
+}
+
 /** A clarification turn: the typed answer plus the photos' annotation names. */
 export function clarificationMessage(
   answer: string,
@@ -62,7 +71,7 @@ export function clarificationMessage(
   );
 }
 
-export function loadImage(url: string): Promise<HTMLImageElement> {
+function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);

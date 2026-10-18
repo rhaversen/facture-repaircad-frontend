@@ -12,7 +12,7 @@ import { useFlowRun } from "@/hooks/useFlowRun";
 import { downloadBlob, exportScene } from "@/lib/exportModel";
 import { createRun, resolvePipelines, sendMessage } from "@/lib/flow";
 import { errorText, fetchStepContext } from "@/lib/forge";
-import { bootstrapMessage, guidanceRequest, viewSheet } from "@/lib/refinement";
+import { bootstrapMessage, guidanceRequest, viewFiles } from "@/lib/refinement";
 
 /*
   Steps 6 and 7 for one picked design. The AfterForge assistant is started
@@ -51,12 +51,12 @@ export default function Workspace({
     startedFor.current = turnsDone;
     (async () => {
       const stepContext = await fetchStepContext(designId);
-      const sheet = await viewSheet(stepContext.images);
+      const views = await viewFiles(stepContext.images);
       const run = await createRun((await resolvePipelines()).refinement);
       await sendMessage(
         run._id,
         bootstrapMessage({ designId, handoff, handoffVariant, designIntent, parameters, stepContext }),
-        sheet ? [sheet] : [],
+        views,
       );
       // A Forge turn that finished meanwhile already asked for a newer one.
       if (startedFor.current !== turnsDone) return;

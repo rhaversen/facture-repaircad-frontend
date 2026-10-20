@@ -10,17 +10,30 @@ import FlowChat from "@/features/planning/FlowChat";
 import { useDesign } from "@/hooks/useDesign";
 import { useFlowRun } from "@/hooks/useFlowRun";
 import { downloadBlob, exportScene } from "@/lib/exportModel";
-import { createRun, resolvePipelines, sendMessage } from "@/lib/flow";
+import { createRun, fetchMessages, resolvePipelines, sendMessage } from "@/lib/flow";
 import { errorText, fetchStepContext } from "@/lib/forge";
-import { bootstrapMessage, guidanceRequest, viewFiles } from "@/lib/refinement";
+import {
+  bootstrapMessage,
+  guidanceRequest,
+  hiddenMessageCount,
+  modelUpdateMessage,
+  viewFiles,
+} from "@/lib/refinement";
+import { loadRefinement, storeRefinement } from "@/lib/store";
 
 /*
-  Steps 6 and 7 for one picked design. The AfterForge assistant is started
-  fresh, with Forge's current step context for the design, on entry and again
-  after every Forge turn finishes, so it always talks about the design as it
-  now is. Each forge_instruction it produces is sent straight to this design;
-  while Forge works, the chat and the parameters are locked. The final view
-  asks the current assistant for the repair guidance.
+  Steps 6 and 7 for one picked design. Each design has one AfterForge
+  assistant for good: it is started the first time the design is opened
+  (once Forge has finished building it), bootstrapped with the design's
+  brief, the planning run's fabrication intent and Forge's step context, and
+  remembered in localStorage, so every later visit continues the same
+  conversation. Each forge_instruction it produces is sent straight to this
+  design; while Forge works, the parameters are locked and the chat's
+  composer is hidden. When a Forge turn finishes, the assistant is sent the
+  model's fresh step context, and the chat hides everything up to the latest
+  context message: the user sees a fresh conversation while the assistant
+  keeps the whole history. The final view asks the assistant for the repair
+  guidance.
 */
 export default function Workspace({
   designId,
@@ -41,14 +54,21 @@ export default function Workspace({
   const { model, running, turnsDone, applying, parameters, send } = design;
   const busy = running !== false || applying;
 
-  // ── The AfterForge assistant, one per settled design state ──
-  const [assistant, setAssistant] = useState<{ runId: string; forTurn: number } | null>(null);
+  // ── The design's AfterForge assistant ──
+  const [storedId, setStoredId] = useState(() => loadRefinement(designId));
+  const refinement = useFlowRun(storedId);
+  // A remembered run the server no longer has is started over.
+  const refinementId = refinement.missing ? null : storedId;
   const [refinementError, setRefinementError] = useState("");
-  const startedFor = useRef(-1);
+  const starting = useRef(false);
   const loaded = design.design !== null;
+  // The Forge turn whose model the assistant was last given. `turnsDone`
+  // counts from zero on every mount, as does this.
+  const [contextTurn, setContextTurn] = useState(0);
   useEffect(() => {
-    if (!loaded || busy || startedFor.current === turnsDone) return;
-    startedFor.current = turnsDone;
+    if (refinementId !== null || !loaded || busy || starting.current || refinementError) return;
+    starting.current = true;
+    const turn = turnsDone;
     (async () => {
       const stepContext = await fetchStepContext(designId);
       const views = await viewFiles(stepContext.images);
@@ -58,34 +78,86 @@ export default function Workspace({
         bootstrapMessage({ designId, handoff, handoffVariant, designIntent, parameters, stepContext }),
         views,
       );
-      // A Forge turn that finished meanwhile already asked for a newer one.
-      if (startedFor.current !== turnsDone) return;
-      setAssistant({ runId: run._id, forTurn: turnsDone });
-      setRefinementError("");
-    })().catch((err) => {
-      console.error("Could not start the refinement assistant:", err);
-      setRefinementError(errorText(err, "Could not start the refinement assistant."));
-    });
-  }, [loaded, busy, turnsDone, designId, handoff, handoffVariant, designIntent, parameters]);
+      // Remembered only once bootstrapped, so a stored run always has its setup behind it.
+      storeRefinement(designId, run._id);
+      setStoredId(run._id);
+      setContextTurn(turn);
+    })()
+      .catch((err) => {
+        console.error("Could not start the refinement assistant:", err);
+        setRefinementError(errorText(err, "Could not start the refinement assistant."));
+      })
+      .finally(() => {
+        starting.current = false;
+      });
+  }, [
+    refinementId,
+    loaded,
+    busy,
+    refinementError,
+    turnsDone,
+    designId,
+    handoff,
+    handoffVariant,
+    designIntent,
+    parameters,
+  ]);
 
-  function restartAssistant() {
-    startedFor.current = -1;
-    setRefinementError("");
-  }
-
-  const refinementId = assistant?.forTurn === turnsDone ? assistant.runId : null;
-  const refinement = useFlowRun(refinementId);
   const doc = refinement.run?.runningDoc;
+  const seenRunId = refinement.run?._id ?? null;
   const refinementIdle = refinement.run !== null && refinement.run.status !== "running";
 
-  // Each new instruction goes to the design once.
-  const instruction = doc?.forge_instruction?.trim() ?? "";
-  const applied = useRef("");
+  // A finished Forge turn sends the assistant the model as it now is.
+  const contextStale = refinementId !== null && turnsDone > contextTurn;
+  const updating = useRef(false);
+  const refreshRefinement = refinement.refresh;
   useEffect(() => {
-    if (instruction === "" || instruction === applied.current || busy) return;
-    applied.current = instruction;
+    if (!contextStale || busy || !refinementIdle || updating.current) return;
+    updating.current = true;
+    const turn = turnsDone;
+    (async () => {
+      const stepContext = await fetchStepContext(designId);
+      const views = await viewFiles(stepContext.images);
+      await sendMessage(refinementId!, modelUpdateMessage({ parameters, stepContext }), views);
+      await refreshRefinement();
+    })()
+      .catch((err) => console.error("Could not send the assistant the new model:", err))
+      .finally(() => {
+        // Marked done even on failure: the next Forge turn tries again.
+        setContextTurn(turn);
+        updating.current = false;
+      });
+  }, [contextStale, busy, refinementIdle, turnsDone, designId, refinementId, parameters, refreshRefinement]);
+
+  // The chat starts after the latest context message, counted again once
+  // each new one is in.
+  const [hidden, setHidden] = useState<{ runId: string; turn: number; count: number } | null>(null);
+  useEffect(() => {
+    // Only once the run is known to exist.
+    if (refinementId === null || seenRunId !== refinementId || contextStale) return;
+    if (hidden?.runId === refinementId && hidden.turn === contextTurn) return;
+    fetchMessages(refinementId)
+      .then((messages) =>
+        setHidden({ runId: refinementId, turn: contextTurn, count: hiddenMessageCount(messages) }),
+      )
+      .catch((err) => console.error("Could not load the refinement conversation:", err));
+  }, [refinementId, seenRunId, contextStale, contextTurn, hidden]);
+  const hiddenCount = hidden?.runId === refinementId ? hidden.count : null;
+
+  // Each new instruction goes to the design once. Whatever instruction the
+  // run already holds when this page first sees it went out on an earlier visit.
+  const instruction = doc?.forge_instruction?.trim() ?? "";
+  const applied = useRef<{ runId: string; instruction: string } | null>(null);
+  useEffect(() => {
+    if (seenRunId === null) return;
+    if (applied.current?.runId !== seenRunId) {
+      applied.current = { runId: seenRunId, instruction };
+      return;
+    }
+    if (instruction === "" || instruction === applied.current.instruction || busy) return;
+    applied.current = { runId: seenRunId, instruction };
     void send(instruction);
-  }, [instruction, busy, send]);
+  }, [seenRunId, instruction, busy, send]);
 
   // ── Guides ──
   const [activeGuide, setActiveGuide] = useState<string | null>(null);
@@ -108,6 +180,8 @@ export default function Workspace({
   const [requesting, setRequesting] = useState(false);
   const [finalError, setFinalError] = useState("");
   async function getFinal() {
+    // The assistant already wrote it on an earlier visit, and its conversation ended there.
+    if (doc?.final_guidance?.trim()) return onFinal();
     setRequesting(true);
     setFinalError("");
     try {
@@ -120,7 +194,7 @@ export default function Workspace({
       setRequesting(false);
     }
   }
-  const canFinish = model !== null && !busy && refinementIdle && !requesting;
+  const canFinish = model !== null && !busy && !contextStale && refinementIdle && !requesting;
 
   if (final) {
     const guidance = doc?.final_guidance?.trim() ?? "";
@@ -233,26 +307,42 @@ export default function Workspace({
           </p>
         </div>
         <div className="relative flex min-h-0 flex-1 flex-col">
-          {refinementId && <FlowChat runId={refinementId} title="CAD refinement" />}
+          {refinementId && hiddenCount !== null && (
+            <FlowChat
+              key={hiddenCount}
+              runId={refinementId}
+              title="CAD refinement"
+              hideMessages={hiddenCount}
+              composerHidden={busy || contextStale}
+            />
+          )}
+          {refinementId && (busy || contextStale) && (
+            <p className="m-0 flex shrink-0 items-center gap-2 border-t border-line-soft px-5 py-3 text-sm text-muted-2">
+              <span className="cad-spinner m-0 size-4 shrink-0 border-2" />
+              {running
+                ? "Forge is updating the design…"
+                : applying
+                  ? "Applying your change…"
+                  : "Showing the assistant the new model…"}
+            </p>
+          )}
           {refinementError ? (
             <div className="m-4">
               <p className="error-box">{refinementError}</p>
-              <button type="button" className="btn-secondary mt-3" onClick={restartAssistant}>
+              <button type="button" className="btn-secondary mt-3" onClick={() => setRefinementError("")}>
                 Try again
               </button>
             </div>
           ) : (
-            (busy || !refinementId) && (
+            (!refinementId || hiddenCount === null) && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/90 p-6 text-center text-sm text-muted-2">
-                {(running || !refinementId) && <div className="cad-spinner" />}
+                <div className="cad-spinner" />
                 <p className="m-0">
-                  {running
-                    ? "Forge is updating the design. The assistant restarts with the new model when it is done."
-                    : applying
-                      ? "Applying your change…"
-                      : model === null
-                        ? "Loading the model…"
-                        : "Starting the refinement assistant…"}
+                  {refinementId
+                    ? "Loading the conversation…"
+                    : running
+                      ? "Forge is building the design. The assistant starts when it is done."
+                      : "Starting the refinement assistant…"}
                 </p>
               </div>
             )

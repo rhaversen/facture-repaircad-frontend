@@ -10,9 +10,15 @@ import FlowChat from "@/features/planning/FlowChat";
 import { useDesign } from "@/hooks/useDesign";
 import { useFlowRun } from "@/hooks/useFlowRun";
 import { downloadBlob, exportScene } from "@/lib/exportModel";
-import { createRun, resolvePipelines, sendMessage } from "@/lib/flow";
+import { createRun, fetchMessages, resolvePipelines, sendMessage } from "@/lib/flow";
 import { errorText, fetchStepContext } from "@/lib/forge";
-import { bootstrapMessage, guidanceRequest, viewFiles } from "@/lib/refinement";
+import {
+  bootstrapMessage,
+  guidanceRequest,
+  hiddenMessageCount,
+  modelUpdateMessage,
+  viewFiles,
+} from "@/lib/refinement";
 import { loadRefinement, storeRefinement } from "@/lib/store";
 
 /*
@@ -23,7 +29,10 @@ import { loadRefinement, storeRefinement } from "@/lib/store";
   remembered in localStorage, so every later visit continues the same
   conversation. Each forge_instruction it produces is sent straight to this
   design; while Forge works, the parameters are locked and the chat's
-  composer is hidden. The final view asks the assistant for the repair
+  composer is hidden. When a Forge turn finishes, the assistant is sent the
+  model's fresh step context, and the chat hides everything up to the latest
+  context message: the user sees a fresh conversation while the assistant
+  keeps the whole history. The final view asks the assistant for the repair
   guidance.
 */
 export default function Workspace({
@@ -42,7 +51,7 @@ export default function Workspace({
   onFinal: () => void;
 }) {
   const design = useDesign(designId);
-  const { model, running, applying, parameters, send } = design;
+  const { model, running, turnsDone, applying, parameters, send } = design;
   const busy = running !== false || applying;
 
   // ── The design's AfterForge assistant ──
@@ -53,9 +62,13 @@ export default function Workspace({
   const [refinementError, setRefinementError] = useState("");
   const starting = useRef(false);
   const loaded = design.design !== null;
+  // The Forge turn whose model the assistant was last given. `turnsDone`
+  // counts from zero on every mount, as does this.
+  const [contextTurn, setContextTurn] = useState(0);
   useEffect(() => {
     if (refinementId !== null || !loaded || busy || starting.current || refinementError) return;
     starting.current = true;
+    const turn = turnsDone;
     (async () => {
       const stepContext = await fetchStepContext(designId);
       const views = await viewFiles(stepContext.images);
@@ -68,6 +81,7 @@ export default function Workspace({
       // Remembered only once bootstrapped, so a stored run always has its setup behind it.
       storeRefinement(designId, run._id);
       setStoredId(run._id);
+      setContextTurn(turn);
     })()
       .catch((err) => {
         console.error("Could not start the refinement assistant:", err);
@@ -76,15 +90,63 @@ export default function Workspace({
       .finally(() => {
         starting.current = false;
       });
-  }, [refinementId, loaded, busy, refinementError, designId, handoff, handoffVariant, designIntent, parameters]);
+  }, [
+    refinementId,
+    loaded,
+    busy,
+    refinementError,
+    turnsDone,
+    designId,
+    handoff,
+    handoffVariant,
+    designIntent,
+    parameters,
+  ]);
 
   const doc = refinement.run?.runningDoc;
+  const seenRunId = refinement.run?._id ?? null;
   const refinementIdle = refinement.run !== null && refinement.run.status !== "running";
+
+  // A finished Forge turn sends the assistant the model as it now is.
+  const contextStale = refinementId !== null && turnsDone > contextTurn;
+  const updating = useRef(false);
+  const refreshRefinement = refinement.refresh;
+  useEffect(() => {
+    if (!contextStale || busy || !refinementIdle || updating.current) return;
+    updating.current = true;
+    const turn = turnsDone;
+    (async () => {
+      const stepContext = await fetchStepContext(designId);
+      const views = await viewFiles(stepContext.images);
+      await sendMessage(refinementId!, modelUpdateMessage({ parameters, stepContext }), views);
+      await refreshRefinement();
+    })()
+      .catch((err) => console.error("Could not send the assistant the new model:", err))
+      .finally(() => {
+        // Marked done even on failure: the next Forge turn tries again.
+        setContextTurn(turn);
+        updating.current = false;
+      });
+  }, [contextStale, busy, refinementIdle, turnsDone, designId, refinementId, parameters, refreshRefinement]);
+
+  // The chat starts after the latest context message, counted again once
+  // each new one is in.
+  const [hidden, setHidden] = useState<{ runId: string; turn: number; count: number } | null>(null);
+  useEffect(() => {
+    // Only once the run is known to exist.
+    if (refinementId === null || seenRunId !== refinementId || contextStale) return;
+    if (hidden?.runId === refinementId && hidden.turn === contextTurn) return;
+    fetchMessages(refinementId)
+      .then((messages) =>
+        setHidden({ runId: refinementId, turn: contextTurn, count: hiddenMessageCount(messages) }),
+      )
+      .catch((err) => console.error("Could not load the refinement conversation:", err));
+  }, [refinementId, seenRunId, contextStale, contextTurn, hidden]);
+  const hiddenCount = hidden?.runId === refinementId ? hidden.count : null;
 
   // Each new instruction goes to the design once. Whatever instruction the
   // run already holds when this page first sees it went out on an earlier visit.
   const instruction = doc?.forge_instruction?.trim() ?? "";
-  const seenRunId = refinement.run?._id ?? null;
   const applied = useRef<{ runId: string; instruction: string } | null>(null);
   useEffect(() => {
     if (seenRunId === null) return;
@@ -132,7 +194,7 @@ export default function Workspace({
       setRequesting(false);
     }
   }
-  const canFinish = model !== null && !busy && refinementIdle && !requesting;
+  const canFinish = model !== null && !busy && !contextStale && refinementIdle && !requesting;
 
   if (final) {
     const guidance = doc?.final_guidance?.trim() ?? "";
@@ -245,13 +307,23 @@ export default function Workspace({
           </p>
         </div>
         <div className="relative flex min-h-0 flex-1 flex-col">
-          {refinementId && (
-            <FlowChat runId={refinementId} title="CAD refinement" composerHidden={busy} />
+          {refinementId && hiddenCount !== null && (
+            <FlowChat
+              key={hiddenCount}
+              runId={refinementId}
+              title="CAD refinement"
+              hideMessages={hiddenCount}
+              composerHidden={busy || contextStale}
+            />
           )}
-          {refinementId && busy && (
+          {refinementId && (busy || contextStale) && (
             <p className="m-0 flex shrink-0 items-center gap-2 border-t border-line-soft px-5 py-3 text-sm text-muted-2">
               <span className="cad-spinner m-0 size-4 shrink-0 border-2" />
-              {running ? "Forge is updating the design…" : "Applying your change…"}
+              {running
+                ? "Forge is updating the design…"
+                : applying
+                  ? "Applying your change…"
+                  : "Showing the assistant the new model…"}
             </p>
           )}
           {refinementError ? (
@@ -262,13 +334,15 @@ export default function Workspace({
               </button>
             </div>
           ) : (
-            !refinementId && (
+            (!refinementId || hiddenCount === null) && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/90 p-6 text-center text-sm text-muted-2">
                 <div className="cad-spinner" />
                 <p className="m-0">
-                  {running
-                    ? "Forge is building the design. The assistant starts when it is done."
-                    : "Starting the refinement assistant…"}
+                  {refinementId
+                    ? "Loading the conversation…"
+                    : running
+                      ? "Forge is building the design. The assistant starts when it is done."
+                      : "Starting the refinement assistant…"}
                 </p>
               </div>
             )

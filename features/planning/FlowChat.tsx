@@ -8,17 +8,20 @@ import { FLOW_EMBED_BASE } from "@/lib/env";
 /*
   A Flow conversation, embedded. The iframe owns streaming, markdown and the
   composer; the shared Facture session cookie signs it in. The first two
-  messages (the greeting and this app's opening turn) are hidden.
+  messages (the greeting and this app's opening turn) are hidden unless the
+  host says how many to hide.
   `composerHidden` takes the composer away without reloading the frame: it is
   posted on every change and again whenever the frame reports it is ready.
 */
 export default function FlowChat({
   runId,
   title,
+  hideMessages = 2,
   composerHidden = false,
 }: {
   runId: string;
   title: string;
+  hideMessages?: number;
   composerHidden?: boolean;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
@@ -27,7 +30,7 @@ export default function FlowChat({
     model: FLOW_MODEL,
     showTitle: "0",
     showIntro: "0",
-    hideMessages: "2",
+    hideMessages: String(hideMessages),
   });
 
   useEffect(() => {

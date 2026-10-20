@@ -5,11 +5,13 @@ const formatParameters = (parameters: Parameter[]) =>
   parameters.map((p) => `- ${p.name}: ${p.value}${p.unit ? ` ${p.unit}` : ""} (${p.description})`).join("\n");
 
 /*
-  The AfterForge run's first turn: the setup stage records it as the round's
-  state (the design it edits, the brief that design was generated from, the
-  upstream fabrication intent, the model's current parameters, and Forge's
-  own step context for the design as it stands, whose views ride along as
-  the attached images). It is machine context, not a user request, and says so.
+  The AfterForge run's first turn, sent once when a design is first opened:
+  the setup stage records it as the refinement state the run keeps for good.
+  Each section is headed by the state field it fills (the design it edits,
+  the brief that design was generated from, the planning run's fabrication
+  intent, and the model as Forge has it now: parameters and step context,
+  with the step context's views riding along as the attached images). It is
+  machine context, not a user request, and says so.
 */
 export function bootstrapMessage({
   designId,
@@ -26,35 +28,48 @@ export function bootstrapMessage({
   parameters: Parameter[];
   stepContext: StepContext;
 }): string {
+  const views = stepContext.images.map((i) => i.view);
   return [
     "# Setup — initialization payload, not user text",
     "",
-    "This is a machine-sent bootstrap payload, not a user refinement request. Record it into " +
-      "your persistent state and do not reply to it: no acknowledgement, clarification question, " +
-      "Forge instruction, or fabrication/assembly guidance in response.",
+    "This is a machine-sent bootstrap payload, not a user refinement request. Record each " +
+      "section below into the state field it is headed by, and do not reply to it: no " +
+      "acknowledgement, clarification question, Forge instruction, or fabrication/assembly " +
+      "guidance in response.",
     "",
-    `CURRENT FORGE DESIGN ID: ${designId}`,
-    `HANDOFF VARIANT: ${handoffVariant}`,
-    ...(designIntent.trim() ? ["", "# Fabrication design intent", "", designIntent.trim()] : []),
+    "# design_id",
     "",
-    "# Selected Forge handoff",
+    designId,
+    "",
+    "# handoff_variant",
+    "",
+    handoffVariant,
+    "",
+    "# fabrication_design_intent",
+    "",
+    designIntent.trim() || "Not provided by the planning run.",
+    "",
+    "# selected_forge_handoff",
     "",
     handoff.trim(),
     "",
-    "# Current model context",
+    "# current_model_context",
     "",
     parameters.length > 0
       ? `Current parameters of the Forge model:\n${formatParameters(parameters)}`
       : "The Forge model has no adjustable parameters.",
     "",
-    "# Forge step context",
-    "",
-    "What the Forge design agent sees for this design right now, built fresh for this message." +
-      (stepContext.images.length > 0
-        ? ` The attached images are its rendered views, in this order: ${stepContext.images.map((i) => i.view).join(", ")}.`
-        : ""),
+    "What the Forge design agent sees for this design right now:",
     "",
     stepContext.text.trim(),
+    ...(views.length > 0
+      ? [
+          "",
+          "# current_model_visual_context",
+          "",
+          `The attached images are Forge's rendered views of the current model, in this order: ${views.join(", ")}.`,
+        ]
+      : []),
     "",
     "# Later refinement messages",
     "",

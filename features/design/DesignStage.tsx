@@ -24,9 +24,8 @@ async function generateDesigns(handoffs: string[]): Promise<string[]> {
   final view is showing, are plain view state that a refresh drops back to
   the picker.
 
-  Every entry into the workspace mounts a fresh one (`session`), and with it
-  a fresh AfterForge conversation: going back and re-picking never resumes an
-  old round, and edits always land on the picked design itself.
+  The workspace is keyed by design, so switching designs swaps the whole
+  workspace; each design brings back its own AfterForge conversation.
 */
 export default function DesignStage({ run, onAllRuns }: { run: FlowRun; onAllRuns: () => void }) {
   const handoffs = useMemo(() => handoffsOf(run.runningDoc), [run.runningDoc]);
@@ -34,7 +33,6 @@ export default function DesignStage({ run, onAllRuns }: { run: FlowRun; onAllRun
   const [error, setError] = useState("");
   const [designId, setDesignId] = useState<string | null>(null);
   const [view, setView] = useState<"pick" | "edit" | "final">("pick");
-  const [session, setSession] = useState(0);
   const generating = useRef(false);
 
   const generate = useCallback(() => {
@@ -58,7 +56,6 @@ export default function DesignStage({ run, onAllRuns }: { run: FlowRun; onAllRun
   const edit = (id: string) => {
     setDesignId(id);
     setView("edit");
-    setSession((n) => n + 1);
   };
 
   const step = view === "pick" ? 5 : view === "edit" ? 6 : 7;
@@ -73,7 +70,7 @@ export default function DesignStage({ run, onAllRuns }: { run: FlowRun; onAllRun
     return (
       <Page progress={progress} onAllRuns={onAllRuns}>
         <Workspace
-          key={session}
+          key={designId}
           designId={designId}
           handoff={handoffs[index] ?? handoffs[0]}
           handoffVariant={`forge_handoff_${index + 1}`}

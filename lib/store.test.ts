@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { forgetRun, loadActiveRun, loadDesigns, storeActiveRun, storeDesigns } from "@/lib/store";
+import {
+  forgetRun,
+  loadActiveRun,
+  loadDesigns,
+  loadRefinement,
+  storeActiveRun,
+  storeDesigns,
+  storeRefinement,
+} from "@/lib/store";
 
 describe("store", () => {
   beforeEach(() => localStorage.clear());
@@ -29,6 +37,25 @@ describe("store", () => {
     expect(loadActiveRun()).toBeNull();
     expect(loadDesigns("gone")).toEqual([]);
     expect(loadDesigns("kept")).toEqual(["b"]);
+  });
+
+  it("keeps one refinement run per design until it is forgotten", () => {
+    storeRefinement("a", "after-a");
+    storeRefinement("b", "after-b");
+    expect(loadRefinement("a")).toBe("after-a");
+    storeRefinement("a", null);
+    expect(loadRefinement("a")).toBeNull();
+    expect(loadRefinement("b")).toBe("after-b");
+  });
+
+  it("forgets the refinement runs of a forgotten run's designs", () => {
+    storeDesigns("gone", ["a"]);
+    storeDesigns("kept", ["b"]);
+    storeRefinement("a", "after-a");
+    storeRefinement("b", "after-b");
+    forgetRun("gone");
+    expect(loadRefinement("a")).toBeNull();
+    expect(loadRefinement("b")).toBe("after-b");
   });
 
   it("treats malformed storage as empty", () => {

@@ -39,7 +39,8 @@
     "slerp",
     "unitless",
     "GLTF",
-    "gltf"
+    "gltf",
+    "aipihhca"
   ],
   "ignorePaths": [
     "node_modules/**",

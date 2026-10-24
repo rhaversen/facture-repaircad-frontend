@@ -117,16 +117,10 @@ describe("referencePhotoParts", () => {
     const picked = referencePhotoParts(doc, [
       message([
         { type: "text", text: "two" },
-        { type: "user-image", imageId: "qc8k2mtp05zt1" },
+        { type: "user-image", imageId: "marker1" },
         photo("file1xyz"),
       ]),
-    ].map((m) => {
-      // rename marker id in the fixture
-      const content = (m.content as Array<Record<string, unknown>>).map((p) =>
-        p.type === "user-image" ? { ...p, imageId: "marker1" } : p,
-      );
-      return { ...m, content };
-    }));
+    ]);
     expect(picked).toEqual([
       { type: "user-image", imageId: "marker1" },
       photo("file1xyz"),

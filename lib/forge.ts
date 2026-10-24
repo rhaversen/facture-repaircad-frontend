@@ -16,6 +16,16 @@ export function errorText(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
 }
 
+/** Upload images as user-level forge assets; the returned ids ride on the
+    next design chat's `imageIds`. */
+export async function uploadImages(files: File[]): Promise<string[]> {
+  if (files.length === 0) return [];
+  const form = new FormData();
+  for (const file of files) form.append("files", file, file.name);
+  const res = await forgeApi.postForm("/uploads", form);
+  return res.data.images ?? [];
+}
+
 export async function createDesign(): Promise<string> {
   const res = await forgeApi.post("/designs");
   return res.data._id;
@@ -34,11 +44,12 @@ export async function getDesign(designId: string): Promise<Design | null> {
 
 /* Starts an agent turn on the design; it runs detached and is followed on the
    design's stream. 409 while another turn is running. */
-export async function sendDesignMessage(designId: string, message: string) {
+export async function sendDesignMessage(designId: string, message: string, imageIds: string[] = []) {
   await forgeApi.post(`/designs/${designId}/chat`, {
     message,
     model: FORGE_MODEL,
     reasoningEffort: FORGE_REASONING_EFFORT,
+    ...(imageIds.length > 0 ? { imageIds } : {}),
   });
 }
 

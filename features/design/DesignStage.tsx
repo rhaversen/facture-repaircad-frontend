@@ -5,16 +5,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Page from "@/components/Page";
 import Picker from "./Picker";
 import Workspace from "./Workspace";
-import { createDesign, errorText, sendDesignMessage } from "@/lib/forge";
-import { handoffsOf } from "@/lib/flow";
+import { createDesign, errorText, sendDesignMessage, uploadImages } from "@/lib/forge";
+import { fetchMessages, handoffsOf, photoFilesOf, referencePhotoParts } from "@/lib/flow";
 import { loadDesigns, storeDesigns } from "@/lib/store";
 import type { FlowRun } from "@/lib/types";
 
 /* One design per handoff. The ids are stored only once every brief was sent,
-   so a stored design always has its generation turn behind it. */
-async function generateDesigns(handoffs: string[]): Promise<string[]> {
+   so a stored design always has its generation turn behind it.
+   The run's reference photos (the document's forge_reference_photos, or all
+   of the run's photos when it named none) are uploaded to Forge once and
+   attached to every generation turn, so the Forge agent starts from the
+   actual repair photos. */
+async function generateDesigns(run: FlowRun, handoffs: string[]): Promise<string[]> {
+  const messages = await fetchMessages(run._id);
+  const photoFiles = await photoFilesOf(referencePhotoParts(run.runningDoc, messages));
+  const imageIds = await uploadImages(photoFiles);
   const ids = await Promise.all(handoffs.map(() => createDesign()));
-  await Promise.all(ids.map((id, i) => sendDesignMessage(id, handoffs[i])));
+  await Promise.all(ids.map((id, i) => sendDesignMessage(id, handoffs[i], imageIds)));
   return ids;
 }
 
@@ -40,7 +47,7 @@ export default function DesignStage({ run, onAllRuns }: { run: FlowRun; onAllRun
   const generate = useCallback(() => {
     if (generating.current) return;
     generating.current = true;
-    generateDesigns(handoffs)
+    generateDesigns(run, handoffs)
       .then((ids) => {
         storeDesigns(run._id, ids);
         setDesignIds(ids);
@@ -49,7 +56,7 @@ export default function DesignStage({ run, onAllRuns }: { run: FlowRun; onAllRun
       .finally(() => {
         generating.current = false;
       });
-  }, [run._id, handoffs]);
+  }, [run, handoffs]);
 
   useEffect(() => {
     if (designIds.length === 0) generate();

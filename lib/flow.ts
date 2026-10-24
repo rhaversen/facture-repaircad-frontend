@@ -2,7 +2,8 @@ import axios from "axios";
 
 import { FLOW_MODEL } from "./config";
 import { FLOW_API_BASE } from "./env";
-import type { FlowMessage, FlowRun, RunningDoc } from "./types";
+import { MAX_PHOTOS } from "./intake";
+import type { FlowMessage, FlowRun, MessageContentPart, RunningDoc } from "./types";
 
 const flowApi = axios.create({ baseURL: FLOW_API_BASE, withCredentials: true });
 
@@ -83,7 +84,11 @@ async function uploadImages(files: File[]): Promise<string[]> {
 }
 
 /* Starts a turn on a settled run. The server answers 202 at once and the turn
-   runs detached; follow it by polling the run until it is no longer running. */
+   runs detached; follow it by polling the run until it is no longer running.
+   Uploaded assets reach the transcript with their asset ids attached by the
+   backend ([photo asset id: ...] tags for the agent, imageId metadata on the
+   photo parts for this client) — the source the S9 gather field's id roster
+   and referencePhotoParts resolve against. */
 export async function sendMessage(runId: string, content: string, files: File[] = []) {
   const imageIds = await uploadImages(files);
   await flowApi.post(`/runs/${runId}/messages`, {
@@ -98,6 +103,104 @@ export function handoffsOf(doc: RunningDoc | undefined): string[] {
   return [doc?.forge_handoff_1, doc?.forge_handoff_2, doc?.forge_handoff_3]
     .filter((value): value is string => typeof value === "string" && value.trim() !== "")
     .map((value) => value.trim());
+}
+
+/* Parse the forge_reference_photos document into asset ids. The canonical
+   shape is a JSON array of id strings (["dah0a8ef0", ...]). The agent writes
+   the list per its S9 few-shots; ids are the ones the backend attaches to
+   the transcript's photos (see idPhotoParts). */
+export function forgeReferencePhotoIds(doc: RunningDoc | undefined): string[] {
+  const docText = (doc?.forge_reference_photos ?? "").trim();
+  if (docText === "") return [];
+  /* Order is the agent's chosen send order; duplicates collapse to the
+     first occurrence. Case is preserved — matching in referencePhotoParts
+     compares ids the way the roster and frontend both carry them. */
+  const dedupe = (list: string[]): string[] => {
+    const seen = new Set<string>();
+    return list.filter((id) => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(docText);
+  } catch {
+    parsed = null; // not JSON — tolerate malformed docs via bracket matching
+  }
+  const parsedIds = Array.isArray(parsed)
+    ? parsed.filter((v): v is string => typeof v === "string" && v.trim() !== "").map((v) => v.trim())
+    : null;
+  if (parsedIds) return dedupe(parsedIds);
+  /* Prose tolerance: the agent wrapped ids in a bracket group on a line the
+     JSON parser rejected (markdown, leading commentary). Harvest
+     id-shaped tokens inside bracket groups only, so stray English words
+     elsewhere in the line never disguise themselves as ids. */
+  const ids: string[] = [];
+  for (const group of docText.matchAll(/\[([^\]]*)\]/g)) {
+    for (const match of group[1].matchAll(/"([a-z0-9_-]{6,32})"|'([a-z0-9_-]{6,32})'|\b([a-z0-9_-]{6,32})\b/gi)) {
+      ids.push(match[1] ?? match[2] ?? match[3]);
+    }
+  }
+  return dedupe(ids);
+}
+
+/** The transcript's photos with the asset id the backend attaches to each
+    hydrated photo part (`imageId` metadata on the file part from the API's
+    read path). Aggregated in transcript order, ids deduplicated. The agent
+    copies these ids into its gather fields, so this is the mapping
+    `referencePhotoParts` resolves against. */
+function idPhotoParts(messages: FlowMessage[]): Array<{ id: string; part: MessageContentPart }> {
+  const seen = new Set<string>();
+  const found: Array<{ id: string; part: MessageContentPart }> = [];
+  for (const m of messages) {
+    if (m.role !== "user" || !Array.isArray(m.content)) continue;
+    for (const part of m.content as MessageContentPart[]) {
+      const id = typeof part?.imageId === "string" ? part.imageId : "";
+      if (!id || seen.has(id)) continue;
+      const isPhoto =
+        (part?.type === "file" && typeof part?.data === "string") ||
+        part?.type === "user-image";
+      if (!isPhoto) continue;
+      seen.add(id);
+      found.push({ id, part });
+    }
+  }
+  return found;
+}
+
+/** The transcript's photos for the Forge handoff: exactly the ones the
+    document's id list names (resolved against the ids each user message
+    declares in its text) or — when the document lists none — every photo,
+    so Forge always gets the repair's visual context. */
+export function referencePhotoParts(
+  doc: RunningDoc | undefined,
+  messages: FlowMessage[],
+  maxPhotos = MAX_PHOTOS,
+): MessageContentPart[] {
+  const all = idPhotoParts(messages);
+  if (all.length === 0) return [];
+  const byId = new Map(all.map(({ id, part }) => [id, part]));
+  const ids = forgeReferencePhotoIds(doc);
+  /* Emit in the document's send order; missing ids simply drop out. With no
+     ids at all, fall back to every photo so Forge still gets context. */
+  if (ids.length === 0) return all.slice(0, maxPhotos).map(({ part }) => part);
+  const picked = ids.flatMap((id) => (byId.has(id) ? [byId.get(id) as MessageContentPart] : []));
+  return picked.slice(0, maxPhotos);
+}
+
+/** Photo parts as uploadable JPEG files, named after their 1-based position
+    among the run's photos. */
+export async function photoFilesOf(parts: MessageContentPart[]): Promise<File[]> {
+  return Promise.all(
+    parts.map(async (part, index) => {
+      const blob = await (await fetch(String(part.data))).blob();
+      return new File([blob], `repair-photo-${index + 1}.jpg`, {
+        type: blob.type || "image/jpeg",
+      });
+    }),
+  );
 }
 
 export type RunStage = "intake" | "planning" | "clarification" | "designs";

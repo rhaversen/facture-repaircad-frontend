@@ -15,6 +15,10 @@ export interface RunningDoc {
   fabrication_design_intent?: string;
   forge_instruction?: string;
   final_guidance?: string;
+  /** JSON string holding a plain asset-id array: `["dah0a8ef0", ...]`, as
+      stored by the run's photo-handoff node. The listed ids are the photos
+      sent to Forge. */
+  forge_reference_photos?: string;
   [key: string]: unknown;
 }
 

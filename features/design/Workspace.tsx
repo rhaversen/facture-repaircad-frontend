@@ -284,19 +284,25 @@ export default function Workspace({
       <CalibrationPanel
         parameters={parameters}
         disabled={busy}
-        onChange={(name, value) => void design.setParameter(name, value)}
+        onApply={design.applyParameters}
         activeGuide={activeGuide}
         onSelectGuide={setActiveGuide}
         onShowGuide={showGuide}
         hasGuides={(name) => design.guides.some((g) => g.param === name)}
-        footer={
+        footer={(unapplied) => (
           <div className="flex flex-col items-end gap-1">
-            <button type="button" disabled={!canFinish} onClick={getFinal}>
+            <button
+              type="button"
+              disabled={!canFinish || unapplied}
+              title={unapplied ? "Apply or discard your parameter changes first" : undefined}
+              onClick={getFinal}
+            >
               {requesting ? "Requesting…" : "Get final model →"}
             </button>
+            {unapplied && <span className="text-[12px] text-muted">Apply your changes first</span>}
             {finalError && <span className="text-[12px] text-red-600">{finalError}</span>}
           </div>
-        }
+        )}
       />
 
       <aside className="flex h-[75dvh] min-h-[420px] min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-white lg:h-auto lg:flex-1">

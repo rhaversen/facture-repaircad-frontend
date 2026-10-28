@@ -8,6 +8,7 @@ import {
   errorText,
   fetchGeometry,
   getDesign,
+  parameterMisfits,
   sendDesignMessage,
   setParameters,
 } from "@/lib/forge";
@@ -114,19 +115,29 @@ export function useDesign(designId: string) {
     return () => controller.abort();
   }, [designId]);
 
-  /* The rebuild's model and parameters also come in on the stream; the reply
-     only tells whether the values were accepted. */
-  const setParameter = useCallback(async (name: string, value: number | null) => {
+  /* Every staged value goes in one PATCH (null returns a parameter to its
+     default). The rebuild's model and parameters also come in on the stream;
+     the reply only tells whether the values were accepted. A rejection or a
+     failed build leaves a warning — the caller keeps its staged values —
+     and a rejection names its reason per parameter. */
+  const applyParameters = useCallback(async (
+    values: Record<string, number | null>,
+  ): Promise<Record<string, string> | null> => {
     setApplying(true);
     setError("");
     try {
-      const result = await setParameters(designId, { [name]: value });
+      const result = await setParameters(designId, values);
       setDesign((d) => (d ? { ...d, parameters: result.parameters, geometry: result.geometry } : d));
       if (result.build !== null && !result.build.ok) {
-        setError("The model could not be fully rebuilt with this value.");
+        setError("The model did not compile with these values.");
       }
+      return null;
     } catch (err) {
-      setError(errorText(err, "Could not apply the change."));
+      const misfits = parameterMisfits(err);
+      setError(misfits
+        ? "The model did not compile with these values."
+        : `The model did not compile with these values: ${errorText(err, "the change was rejected.")}`);
+      return misfits;
     } finally {
       setApplying(false);
     }
@@ -145,5 +156,5 @@ export function useDesign(designId: string) {
 
   const guides: Guide[] = design?.geometry?.guides ?? [];
   const parameters: Parameter[] = (design?.parameters ?? []).filter((p) => p.min !== p.max);
-  return { design, missing, running, turnsDone, model, guides, parameters, applying, error, setParameter, send };
+  return { design, missing, running, turnsDone, model, guides, parameters, applying, error, applyParameters, send };
 }

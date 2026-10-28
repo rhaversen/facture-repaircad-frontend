@@ -207,10 +207,10 @@ export function meshDisplayBounds(scene: THREE.Object3D) {
 }
 
 /*
-  Camera framing per model: aim OrbitControls at the model's displayed centre
-  and pull the camera back to a three-quarter view slightly above it. Every
-  new revision re-runs the fit, so a rebuild that moved the bounds still lands
-  mid-viewport.
+  Camera framing: aim OrbitControls at the first model's displayed centre and
+  pull the camera back to a three-quarter view slightly above it. Later
+  revisions (a parameter change, an agent turn) keep the user's view — only
+  the far plane grows if the new model reaches past it.
 */
 function CameraFit({ model }: { model: THREE.Object3D }) {
   const camera = useThree((state) => state.camera) as THREE.PerspectiveCamera;
@@ -225,7 +225,16 @@ function CameraFit({ model }: { model: THREE.Object3D }) {
     if (!controls || fittedRef.current === model) return;
     const bounds = meshDisplayBounds(model);
     if (bounds === null) return;
+    const first = fittedRef.current === null;
     fittedRef.current = model;
+    if (!first) {
+      const reach = camera.position.distanceTo(bounds.center) + bounds.radius;
+      if (reach * 2 > camera.far) {
+        camera.far = reach * 2;
+        camera.updateProjectionMatrix();
+      }
+      return;
+    }
 
     // Fit against the narrower side of the frame: on a non-square pane the
     // horizontal fov is smaller than the vertical one, and the bounds radius

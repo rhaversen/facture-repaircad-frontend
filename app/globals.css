@@ -194,9 +194,10 @@
     }
   }
 
-  /* Parameter slider (forge-style, adapted to this app's palette): the
-     filled part of the track is drawn with a gradient sized by --fill,
-     which the component sets inline to the percent between min and max. */
+  /* Parameter slider (forge-style, adapted to this app's palette): the whole
+     track is one gradient, --track, which the component sets inline from
+     these colors — in range, the part left of the thumb is filled; out of
+     range, the viable span is filled and the overshoot shows in --track-over. */
   .forge-slider {
     appearance: none;
     width: 100%;
@@ -205,6 +206,10 @@
     cursor: pointer;
     position: relative;
     z-index: 1;
+    --track-fill: #2448b8;
+    --track-rest: #e1e4e8;
+    --track-over: #d64545;
+    --track: var(--track-rest);
   }
   .forge-slider:hover,
   .forge-slider:focus-visible,
@@ -214,11 +219,7 @@
   .forge-slider::-webkit-slider-runnable-track {
     height: 4px;
     border-radius: 9999px;
-    background: linear-gradient(
-      to right,
-      #2448b8 var(--fill, 0%),
-      #e1e4e8 var(--fill, 0%)
-    );
+    background: var(--track);
   }
   .forge-slider::-webkit-slider-thumb {
     appearance: none;
@@ -251,12 +252,12 @@
   .forge-slider::-moz-range-track {
     height: 4px;
     border-radius: 9999px;
-    background: #e1e4e8;
+    background: var(--track);
   }
   .forge-slider::-moz-range-progress {
     height: 4px;
     border-radius: 9999px;
-    background: #2448b8;
+    background: transparent;
   }
   .forge-slider::-moz-range-thumb {
     width: 8px;
@@ -275,6 +276,16 @@
   .forge-slider:disabled::-moz-range-thumb {
     transform: none;
     box-shadow: none;
+  }
+
+  /* A staged value outside the viable range: the thumb pins to the end and
+     takes the overshoot's color. Separate rules — a browser drops a whole
+     rule over the other engine's pseudo-element. */
+  .forge-slider[data-out]::-webkit-slider-thumb {
+    border-color: var(--track-over);
+  }
+  .forge-slider[data-out]::-moz-range-thumb {
+    border-color: var(--track-over);
   }
 
   /* Numeric companion input for the sliders: the browser spin buttons are

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { Parameter } from "@/lib/types";
 
 /** "wall_thickness" → "Wall Thickness". */
@@ -11,27 +11,84 @@ const formatName = (name: string) =>
 		.map((word) => word[0].toUpperCase() + word.slice(1))
 		.join(" ");
 
-/** One parameter row: description line with the guide control and a reset
- *  control, then a slider across the allowed range with a numeric companion
- *  input and the unit. The slider previews while dragging and commits only on
- *  release; the number input stages the typed text and an OK button (or
- *  Enter / blur) applies it. Hovering or clicking anywhere in the row selects
- *  that parameter's guides, deselecting all others (rows without guides do
- *  the deselecting too — one selection at a time, selection-only). */
+/** A staged edit: a new value, or null to return the parameter to its default. */
+type Staged = Record<string, number | null>;
+
+const without = <T,>(record: Record<string, T>, key: string) =>
+	Object.fromEntries(Object.entries(record).filter(([k]) => k !== key));
+
+const same = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a));
+
+/** Whether a staged edit would change the parameter as the server has it. */
+const differs = (parameter: Parameter, edit: number | null) =>
+	edit === null ? parameter.set : !same(edit, parameter.value);
+
+/** Decimals worth showing for a slider step: 0.04 → 2, 1 → 0. */
+const decimalsFor = (step: number) => Math.min(4, Math.max(0, Math.ceil(-Math.log10(step))));
+
+const formatValue = (value: number, decimals: number) => String(Number(value.toFixed(decimals)));
+
+/** The slider's whole track as one gradient. In range, the part left of the
+ *  thumb is filled. Out of range the thumb pins to the near end and the
+ *  track spans the viable range plus the overshoot: the viable part stays
+ *  filled and the overshoot shows in red, sized by how far past it is. */
+function trackStyle(value: number, min: number, max: number): React.CSSProperties {
+	const fill = "var(--track-fill)";
+	const rest = "var(--track-rest)";
+	const over = "var(--track-over)";
+	let track: string;
+	if (value > max) {
+		const at = ((max - min) / (value - min)) * 100;
+		track = `linear-gradient(to right, ${fill} ${at}%, ${over} ${at}%)`;
+	} else if (value < min) {
+		const at = ((min - value) / (max - value)) * 100;
+		track = `linear-gradient(to right, ${over} ${at}%, ${fill} ${at}%)`;
+	} else {
+		const at = ((value - min) / (max - min)) * 100;
+		track = `linear-gradient(to right, ${fill} ${at}%, ${rest} ${at}%)`;
+	}
+	return { "--track": track } as React.CSSProperties;
+}
+
+/** Where a value sits along the slider, as a CSS left offset that matches
+ *  the thumb's travel (its 12px width keeps 6px clear of each end). Out of
+ *  range, the track spans the viable range plus the overshoot (trackStyle),
+ *  so the domain grows to the shown value and the marker scales with it. */
+function markerLeft(at: number, shown: number, min: number, max: number): string {
+	const lo = Math.min(min, shown);
+	const hi = Math.max(max, shown);
+	const t = (Math.min(hi, Math.max(lo, at)) - lo) / (hi - lo);
+	return `calc(6px + ${t} * (100% - 12px))`;
+}
+
+/** One parameter row: the name with a changed marker, reset and guide
+ *  controls, then a slider over the viable range with a numeric companion
+ *  input and the unit. Both controls only stage the value — nothing is sent
+ *  until the panel's Apply. The number input takes any value, including one
+ *  outside the viable range; the slider then pins to that end and its track
+ *  shows the overshoot in red. Hovering or clicking anywhere in the row
+ *  selects that parameter's guides, deselecting all others (rows without
+ *  guides do the deselecting too — one selection at a time, selection-only). */
 function ParameterRow({
 	parameter,
+	edit,
+	misfit,
 	disabled,
-	onConfirm,
-	onReset,
+	onStage,
 	active,
 	hasGuides,
 	onSelect,
 	onShowGuideCamera,
 }: {
 	parameter: Parameter;
+	/** The staged edit, if any (null: back to the default). */
+	edit: number | null | undefined;
+	/** Why Forge rejected this value on the last Apply. */
+	misfit: string | undefined;
 	disabled: boolean;
-	onConfirm: (value: number) => void;
-	onReset: () => void;
+	/** Stages a value (null: the default); staging the server's own state
+	 *  drops the edit. */
+	onStage: (edit: number | null) => void;
 	active: boolean;
 	hasGuides: boolean;
 	onSelect: (name: string | null) => void;
@@ -44,97 +101,67 @@ function ParameterRow({
 	// Integers step whole units; lengths/angles/scalars allow the backend's
 	// full precision, so the slider stays fine.
 	const step = kind === "integer" ? 1 : (boundedMax - min) / 1000;
-	// draft: live slider drag or in-progress number typing; pending: a
-	// released value awaiting the PATCH response.
-	const [draft, setDraft] = useState<number | null>(null);
+	const decimals = decimalsFor(step);
+	const value = edit === undefined ? parameter.value : edit === null ? parameter.default : edit;
+	const changed = edit !== undefined;
+	const below = value < min;
+	const above = value > boundedMax;
+	// The raw text while the number field is being edited, so an empty or
+	// half-typed entry survives every render.
 	const [text, setText] = useState<string | null>(null);
-	const [pending, setPending] = useState<number | null>(null);
-	const shown = draft ?? pending ?? parameter.value;
-	const railRef = useRef<HTMLInputElement>(null);
 	const inputRef = useRef<HTMLInputElement>(null);
-	// The confirmed value is the truth: once it moves, drop the local
-	// overlay. Reset during render per react.dev's "adjusting state when a
-	// prop changes" pattern.
-	const [prevServerValue, setPrevServerValue] = useState(parameter.value);
-	if (prevServerValue !== parameter.value) {
-		setPrevServerValue(parameter.value);
-		setDraft(null);
-		setText(null);
-		setPending(null);
-	}
-	const fill = ((shown - min) / (boundedMax - min)) * 100;
 
-	const commit = (value: number) => {
-		setDraft(null);
-		setText(null);
-		setPending(value);
-		onConfirm(value);
+	const stage = (next: number) => {
+		const v = kind === "integer" ? Math.round(next) : next;
+		onStage(v);
 	};
 
-	// Native 'change' fires once per gesture with the final dragged value.
-	// React's onChange fires per input tick and can end before the release,
-	// so the commit must come from the browser event, not a React handler.
-	// No deps array: every render re-subscribes with fresh state.
-	useEffect(() => {
-		const rail = railRef.current;
-		if (rail === null) return;
-		const onCommitted = () => {
-			const v = Number(rail.value);
-			if (Number.isFinite(v) && v !== parameter.value) commit(v);
-		};
-		rail.addEventListener("change", onCommitted);
-		return () => rail.removeEventListener("change", onCommitted);
-	});
-
-	const commitText = () => {
-		if (text === null) return;
-		const parsed = Number(text.replace(",", "."));
-		if (!Number.isFinite(parsed)) {
-			setText(null);
-			return;
-		}
-		const bounded = Math.min(boundedMax, Math.max(min, parsed));
-		const value = kind === "integer" ? Math.round(bounded) : bounded;
-		if (value !== parameter.value) {
-			commit(value);
-		} else {
-			setText(null);
-		}
-	};
-
-	const shownText =
-		text !== null
-			? text
-			: Number.isInteger(pending ?? parameter.value)
-				? String(pending ?? parameter.value)
-				: (pending ?? parameter.value).toFixed(2);
+	const note = misfit
+		? misfit
+		: below
+			? `Below the viable range (min ${formatValue(min, decimals)} ${unit.trim()})`
+			: above
+				? `Above the viable range (max ${formatValue(max, decimals)} ${unit.trim()})`
+				: null;
 
 	return (
 		<div
 			// Row-wide selection: hovering or clicking anywhere picks this
 			// parameter's guides and deselects every other parameter's.
-			className="flex cursor-pointer flex-col gap-1 rounded-lg border border-[#e4e7eb] bg-white px-3 py-2.5 hover:border-[#2448b8]"
+			className={`flex cursor-pointer flex-col gap-0.5 rounded-md border px-2 py-1.5 transition-colors ${
+				active ? "border-brand bg-[#f6f8fd]" : "border-transparent hover:bg-[#f6f8fd]"
+			}`}
 			onMouseEnter={() => onSelect(parameter.name)}
 			onClick={() => onSelect(parameter.name)}
 		>
-			{/* Reset appears/disappears per value; the guide control only for
-			    rows that actually have guides — the right slot absorbs both so
-			    rows keep a stable label line. */}
 			<div className="flex items-center justify-between gap-2">
-				<span className="min-w-0 truncate text-[13px] leading-snug text-[#30343a]" title={parameter.description}>
-					{formatName(parameter.name)}
+				<span className="flex min-w-0 items-center gap-1.5">
+					{/* The changed marker: a staged value waiting for Apply. */}
+					{changed ? (
+						<span
+							className="size-1.5 shrink-0 rounded-full bg-[#d97706]"
+							title="Changed — click Apply to rebuild the model"
+						/>
+					) : null}
+					<span
+						className={`min-w-0 truncate text-[13px] leading-snug ${changed ? "font-medium text-ink" : "text-ink-soft"}`}
+						title={parameter.description}
+					>
+						{formatName(parameter.name)}
+					</span>
 				</span>
-				<span className="flex shrink-0 items-center justify-end gap-2">
-					{parameter.set ? (
+				<span className="flex shrink-0 items-center justify-end gap-1">
+					{!same(value, parameter.default) ? (
 						<button
 							type="button"
-							onClick={() => {
-								setDraft(null);
-								setPending(parameter.default);
-								onReset();
+							onClick={(e) => {
+								e.stopPropagation();
+								setText(null);
+								onStage(null);
 							}}
 							disabled={disabled}
-							className="rounded bg-transparent px-1 text-[11px] text-[#616975] transition-colors hover:bg-[#eef2fb] hover:text-[#20242a] disabled:opacity-40"
+							title={`Back to the default (${formatValue(parameter.default, decimals)} ${unit.trim()})`}
+							className="rounded bg-transparent px-1 text-[11px] text-muted transition-colors hover:bg-brand-tint hover:text-ink disabled:opacity-40"
 						>
 							reset
 						</button>
@@ -153,8 +180,8 @@ function ParameterRow({
 							}}
 							title="Show guides and frame them in the viewport"
 							className={active
-								? "rounded bg-transparent px-1 text-[11px] font-medium text-[#1d3a99] hover:bg-[#eef2fb]"
-								: "rounded bg-transparent px-1 text-[11px] text-[#616975] hover:bg-[#eef2fb] hover:text-[#1d3a99]"}
+								? "rounded bg-transparent px-1 text-[11px] font-medium text-brand-dark hover:bg-brand-tint"
+								: "rounded bg-transparent px-1 text-[11px] text-muted hover:bg-brand-tint hover:text-brand-dark"}
 							disabled={disabled}
 						>
 							show guide
@@ -163,69 +190,78 @@ function ParameterRow({
 				</span>
 			</div>
 			<div className="flex items-center gap-1.5">
-				<input
-					ref={railRef}
-					type="range"
-					className="forge-slider min-w-0 flex-1"
-					min={min}
-					max={boundedMax}
-					step={step}
-					value={shown}
-					// Change-drag preview only — the commit listener above
-					// sends the PATCH when the gesture completes.
-					style={{ "--fill": `${fill}%` } as React.CSSProperties}
-					disabled={disabled}
-					onChange={(e) => setDraft(Number(e.target.value))}
-				/>
+				{/* While the value is unapplied, a tick marks where the applied
+				    value sits, so the change reads as from → to. */}
+				<div className="relative flex min-w-0 flex-1 items-center">
+					<input
+						type="range"
+						className="forge-slider w-full"
+						min={min}
+						max={boundedMax}
+						step={step}
+						// Out of range, the thumb pins to the near end.
+						value={Math.min(boundedMax, Math.max(min, value))}
+						data-out={below || above ? "" : undefined}
+						style={trackStyle(value, min, boundedMax)}
+						disabled={disabled}
+						onChange={(e) => {
+							setText(null);
+							stage(Number(Number(e.target.value).toFixed(decimals)));
+						}}
+					/>
+					{changed ? (
+						<span
+							aria-hidden="true"
+							className="pointer-events-none absolute top-1/2 z-[3] h-2.5 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-muted"
+							style={{ left: markerLeft(parameter.value, value, min, boundedMax) }}
+						/>
+					) : null}
+				</div>
+				{/* A text input (inputMode decimal) instead of type=number: the
+				    field must accept an empty or half-typed entry while editing.
+				    Every parseable keystroke stages, unclamped. */}
 				<input
 					ref={inputRef}
-					type="number"
-					className="forge-number w-14 shrink-0 rounded border border-[#cbd0d6] bg-transparent px-1.5 py-0.5 text-right text-xs text-[#20242a] focus:border-transparent focus:outline-2 focus:outline-[#4d72df]"
-					min={min}
-					max={boundedMax}
-					step={step}
-					value={shownText}
+					type="text"
+					inputMode="decimal"
+					className={`forge-number w-16 shrink-0 rounded border bg-transparent px-1.5 py-0.5 text-right text-xs text-ink focus:border-transparent focus:outline-2 focus:outline-[#4d72df] ${
+						below || above || misfit ? "border-[#d64545]" : "border-[#cbd0d6]"
+					}`}
+					value={text ?? formatValue(value, decimals)}
 					disabled={disabled}
-					onChange={(e) => setText(e.target.value)}
+					onChange={(e) => {
+						setText(e.target.value);
+						const parsed = Number(e.target.value.replace(",", "."));
+						if (e.target.value.trim() !== "" && Number.isFinite(parsed)) stage(parsed);
+					}}
+					onBlur={() => setText(null)}
 					onKeyDown={(e) => {
-						if (e.key === "Enter") {
+						if (e.key === "Enter" || e.key === "Escape") {
 							e.preventDefault();
-							commitText();
-							inputRef.current?.blur();
-						} else if (e.key === "Escape") {
-							setText(null);
 							inputRef.current?.blur();
 						}
 					}}
 				/>
-				{/* The OK button applies the typed text; without typed text it
-				    stays inert. Always rendered so the row width is stable. */}
-				<button
-					type="button"
-					title="Apply the typed value"
-					onClick={commitText}
-					disabled={disabled || text === null || text.trim() === ""}
-					className="shrink-0 rounded-md bg-transparent px-2 py-0.5 text-[11px] font-semibold text-[#30343a] ring-1 ring-[#cbd0d6] transition-colors hover:bg-[#eef2fb] hover:text-[#1d3a99] disabled:cursor-not-allowed disabled:opacity-40"
-				>
-					OK
-				</button>
 				{/* "w-6" is "deg"'s measured width at this 12px face — every
 				    row reserves it so all sliders stay the same length. */}
-				<span className="w-6 shrink-0 text-right text-[12px] text-[#616975]">
+				<span className="w-6 shrink-0 text-right text-[12px] text-muted">
 					{unit.trim()}
 				</span>
 			</div>
+			{note ? <p className="m-0 text-[11px] leading-snug text-[#a22c2c]">{note}</p> : null}
 		</div>
 	);
 }
 
-/** Every calibratable parameter in one scrollable list. Slider changes apply
- *  on release, typed values on OK/Enter, and reset returns a value to its
- *  default. Hovering a row shows its guides; "show guide" also frames them. */
+/** Every calibratable parameter in one scrollable list. Sliders and typed
+ *  values only stage changes — each changed row is marked and can be reset
+ *  to its default — and one Apply sends them all in a single rebuild. A
+ *  rejected or failed Apply keeps the staged values for another try.
+ *  Hovering a row shows its guides; "show guide" also frames them. */
 export default function CalibrationPanel({
 	parameters,
 	disabled,
-	onChange,
+	onApply,
 	activeGuide,
 	onSelectGuide,
 	onShowGuide,
@@ -234,21 +270,58 @@ export default function CalibrationPanel({
 }: {
 	parameters: Parameter[];
 	disabled: boolean;
-	/** A new value for a parameter; null resets it to its default. */
-	onChange: (name: string, value: number | null) => void;
+	/** Sends every staged value (null: back to the default); resolves to the
+	 *  per-parameter reasons when Forge rejects them, else null. */
+	onApply: (values: Staged) => Promise<Record<string, string> | null>;
 	activeGuide: string | null;
 	onSelectGuide: (name: string | null) => void;
 	onShowGuide: (name: string) => void;
 	hasGuides: (name: string) => boolean;
-	footer: React.ReactNode;
+	/** Renders under the panel; told whether staged edits await Apply. */
+	footer: (unapplied: boolean) => React.ReactNode;
 }) {
+	const [staged, setStaged] = useState<Staged>({});
+	const [misfits, setMisfits] = useState<Record<string, string>>({});
+	// Once the server's values move (an accepted Apply, or a Forge turn),
+	// drop every edit they now match. A rejected Apply moves nothing, so its
+	// edits stay. Reset during render per react.dev's "adjusting state when a
+	// prop changes" pattern; the signature is stable across re-renders.
+	const signature = parameters.map((p) => `${p.name}=${p.value}${p.set ? "" : "~"}`).join(",");
+	const [prevSignature, setPrevSignature] = useState(signature);
+	if (prevSignature !== signature) {
+		setPrevSignature(signature);
+		setStaged((s) =>
+			Object.fromEntries(
+				Object.entries(s).filter(([name, edit]) => {
+					const p = parameters.find((q) => q.name === name);
+					return p !== undefined && differs(p, edit);
+				}),
+			),
+		);
+	}
+
+	const stage = (parameter: Parameter, edit: number | null) => {
+		setMisfits((m) => without(m, parameter.name));
+		setStaged((s) =>
+			differs(parameter, edit) ? { ...s, [parameter.name]: edit } : without(s, parameter.name),
+		);
+	};
+
+	const count = Object.keys(staged).length;
+	const apply = async () => {
+		setMisfits({});
+		setMisfits((await onApply(staged)) ?? {});
+	};
+
 	return (
-		<div className="flex w-full min-w-0 flex-col gap-2.5 self-stretch rounded-xl bg-surface p-3 lg:flex-1">
+		<div className="flex w-full min-w-0 flex-col gap-2 self-stretch rounded-xl bg-surface p-3 lg:flex-1">
 			<div>
-				<h2 className="mb-1 text-[15px]">Calibrate the model</h2>
-				<p className="text-[12px] leading-[1.45] text-muted">Set how the parts fit together</p>
+				<h2 className="mb-0.5 text-[15px]">Calibrate the model</h2>
+				<p className="text-[12px] leading-[1.45] text-muted">Set how the parts fit together, then apply</p>
 			</div>
-			<div className="flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
+			{/* Bottom padding keeps the last row's selection border clear of the
+			    action bar when scrolled to the end. */}
+			<div className="flex flex-1 flex-col gap-0.5 overflow-y-auto pr-1 pb-2">
 				{parameters.length === 0 && (
 					<p className="text-[13px] text-muted">This design has no adjustable parameters.</p>
 				)}
@@ -256,9 +329,10 @@ export default function CalibrationPanel({
 					<ParameterRow
 						key={parameter.name}
 						parameter={parameter}
+						edit={staged[parameter.name]}
+						misfit={misfits[parameter.name]}
 						disabled={disabled}
-						onConfirm={(value) => onChange(parameter.name, value)}
-						onReset={() => onChange(parameter.name, null)}
+						onStage={(edit) => stage(parameter, edit)}
 						active={activeGuide === parameter.name}
 						hasGuides={hasGuides(parameter.name)}
 						onSelect={onSelectGuide}
@@ -266,11 +340,47 @@ export default function CalibrationPanel({
 					/>
 				))}
 			</div>
-			<div className="flex items-center justify-between gap-2 pt-0.5">
-				<span className="text-[12px] text-muted">
-					{parameters.filter((p) => p.set).length} of {parameters.length} set
-				</span>
-				{footer}
+			{/* The action bar: what is pending above, then Apply on the left
+			    and the footer's action on the right. Unapplied changes enable
+			    Apply and hold the footer back, so one of them is live at a time. */}
+			<div className="flex flex-col gap-2 border-t border-line-soft pt-2">
+				<div className="flex min-h-5 items-center justify-between gap-2 text-[12px] text-muted">
+					<span className="flex items-center gap-1">
+						{count === 0
+							? "No unapplied changes"
+							: `${count} unapplied change${count === 1 ? "" : "s"}`}
+						{count > 0 && (
+							<button
+								type="button"
+								onClick={() => {
+									setStaged({});
+									setMisfits({});
+								}}
+								disabled={disabled}
+								className="rounded bg-transparent px-1 text-[11px] text-muted hover:bg-brand-tint hover:text-ink disabled:opacity-40"
+							>
+								discard
+							</button>
+						)}
+					</span>
+					<span>
+						{parameters.filter((p) => p.set).length} of {parameters.length} set
+					</span>
+				</div>
+				<div className="flex items-start justify-between gap-2">
+					{parameters.length > 0 ? (
+						<button
+							type="button"
+							disabled={disabled || count === 0}
+							onClick={() => void apply()}
+						>
+							Apply
+						</button>
+					) : (
+						<span />
+					)}
+					{footer(count > 0)}
+				</div>
 			</div>
 		</div>
 	);

@@ -16,6 +16,16 @@ export function errorText(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
 }
 
+/** The per-parameter reasons of a rejected parameter PATCH (a 400 whose
+    details name each misfit value), or null for any other failure. */
+export function parameterMisfits(err: unknown): Record<string, string> | null {
+  if (!axios.isAxiosError(err) || err.response?.status !== 400) return null;
+  const details = (err.response.data as { details?: unknown } | undefined)?.details;
+  if (typeof details !== "object" || details === null) return null;
+  const entries = Object.entries(details).filter((e): e is [string, string] => typeof e[1] === "string");
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
+}
+
 /** Images one Forge message can carry: the per-request cap of its
     /uploads and the length cap of a chat call's `imageIds` alike. */
 export const FORGE_MAX_IMAGES = 10;

@@ -12,8 +12,8 @@ import type { FlowRun } from "@/lib/types";
 
 /* One design per handoff. The ids are stored only once every brief was sent,
    so a stored design always has its generation turn behind it.
-   The run's reference photos (the document's forge_reference_photos, or all
-   of the run's photos when it named none) are uploaded to Forge once and
+   The run's reference photos (exactly the ones the document's
+   forge_reference_photos names, none if it names none) are uploaded to Forge once and
    attached to every generation turn, so the Forge agent starts from the
    actual repair photos. */
 async function generateDesigns(run: FlowRun, handoffs: string[]): Promise<string[]> {

@@ -50,6 +50,17 @@ function trackStyle(value: number, min: number, max: number): React.CSSPropertie
 	return { "--track": track } as React.CSSProperties;
 }
 
+/** Where a value sits along the slider, as a CSS left offset that matches
+ *  the thumb's travel (its 12px width keeps 6px clear of each end). Out of
+ *  range, the track spans the viable range plus the overshoot (trackStyle),
+ *  so the domain grows to the shown value and the marker scales with it. */
+function markerLeft(at: number, shown: number, min: number, max: number): string {
+	const lo = Math.min(min, shown);
+	const hi = Math.max(max, shown);
+	const t = (Math.min(hi, Math.max(lo, at)) - lo) / (hi - lo);
+	return `calc(6px + ${t} * (100% - 12px))`;
+}
+
 /** One parameter row: the name with a changed marker, reset and guide
  *  controls, then a slider over the viable range with a numeric companion
  *  input and the unit. Both controls only stage the value — nothing is sent
@@ -173,28 +184,39 @@ function ParameterRow({
 								: "rounded bg-transparent px-1 text-[11px] text-muted hover:bg-brand-tint hover:text-brand-dark"}
 							disabled={disabled}
 						>
-							guide
+							show guide
 						</button>
 					) : null}
 				</span>
 			</div>
 			<div className="flex items-center gap-1.5">
-				<input
-					type="range"
-					className="forge-slider min-w-0 flex-1"
-					min={min}
-					max={boundedMax}
-					step={step}
-					// Out of range, the thumb pins to the near end.
-					value={Math.min(boundedMax, Math.max(min, value))}
-					data-out={below || above ? "" : undefined}
-					style={trackStyle(value, min, boundedMax)}
-					disabled={disabled}
-					onChange={(e) => {
-						setText(null);
-						stage(Number(Number(e.target.value).toFixed(decimals)));
-					}}
-				/>
+				{/* While the value is unapplied, a tick marks where the applied
+				    value sits, so the change reads as from → to. */}
+				<div className="relative flex min-w-0 flex-1 items-center">
+					<input
+						type="range"
+						className="forge-slider w-full"
+						min={min}
+						max={boundedMax}
+						step={step}
+						// Out of range, the thumb pins to the near end.
+						value={Math.min(boundedMax, Math.max(min, value))}
+						data-out={below || above ? "" : undefined}
+						style={trackStyle(value, min, boundedMax)}
+						disabled={disabled}
+						onChange={(e) => {
+							setText(null);
+							stage(Number(Number(e.target.value).toFixed(decimals)));
+						}}
+					/>
+					{changed ? (
+						<span
+							aria-hidden="true"
+							className="pointer-events-none absolute top-1/2 z-[3] h-2.5 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-muted"
+							style={{ left: markerLeft(parameter.value, value, min, boundedMax) }}
+						/>
+					) : null}
+				</div>
 				{/* A text input (inputMode decimal) instead of type=number: the
 				    field must accept an empty or half-typed entry while editing.
 				    Every parseable keystroke stages, unclamped. */}
@@ -235,7 +257,7 @@ function ParameterRow({
  *  values only stage changes — each changed row is marked and can be reset
  *  to its default — and one Apply sends them all in a single rebuild. A
  *  rejected or failed Apply keeps the staged values for another try.
- *  Hovering a row shows its guides; "guide" also frames them. */
+ *  Hovering a row shows its guides; "show guide" also frames them. */
 export default function CalibrationPanel({
 	parameters,
 	disabled,
@@ -297,7 +319,9 @@ export default function CalibrationPanel({
 				<h2 className="mb-0.5 text-[15px]">Calibrate the model</h2>
 				<p className="text-[12px] leading-[1.45] text-muted">Set how the parts fit together, then apply</p>
 			</div>
-			<div className="flex flex-1 flex-col gap-0.5 overflow-y-auto pr-1">
+			{/* Bottom padding keeps the last row's selection border clear of the
+			    action bar when scrolled to the end. */}
+			<div className="flex flex-1 flex-col gap-0.5 overflow-y-auto pr-1 pb-2">
 				{parameters.length === 0 && (
 					<p className="text-[13px] text-muted">This design has no adjustable parameters.</p>
 				)}
@@ -316,12 +340,15 @@ export default function CalibrationPanel({
 					/>
 				))}
 			</div>
-			{parameters.length > 0 && (
-				<div className="flex flex-col gap-1.5 border-t border-line-soft pt-2">
-					<div className="flex items-center justify-between text-[12px] text-muted">
-						<span>
-							{count === 0 ? "No unapplied changes" : `${count} unapplied change${count === 1 ? "" : "s"}`}
-						</span>
+			{/* The action bar: what is pending above, then Apply on the left
+			    and the footer's action on the right. Unapplied changes enable
+			    Apply and hold the footer back, so one of them is live at a time. */}
+			<div className="flex flex-col gap-2 border-t border-line-soft pt-2">
+				<div className="flex min-h-5 items-center justify-between gap-2 text-[12px] text-muted">
+					<span className="flex items-center gap-1">
+						{count === 0
+							? "No unapplied changes"
+							: `${count} unapplied change${count === 1 ? "" : "s"}`}
 						{count > 0 && (
 							<button
 								type="button"
@@ -335,22 +362,25 @@ export default function CalibrationPanel({
 								discard
 							</button>
 						)}
-					</div>
-					<button
-						type="button"
-						className="w-full"
-						disabled={disabled || count === 0}
-						onClick={() => void apply()}
-					>
-						Apply
-					</button>
+					</span>
+					<span>
+						{parameters.filter((p) => p.set).length} of {parameters.length} set
+					</span>
 				</div>
-			)}
-			<div className="flex items-center justify-between gap-2 pt-0.5">
-				<span className="text-[12px] text-muted">
-					{parameters.filter((p) => p.set).length} of {parameters.length} set
-				</span>
-				{footer(count > 0)}
+				<div className="flex items-start justify-between gap-2">
+					{parameters.length > 0 ? (
+						<button
+							type="button"
+							disabled={disabled || count === 0}
+							onClick={() => void apply()}
+						>
+							Apply
+						</button>
+					) : (
+						<span />
+					)}
+					{footer(count > 0)}
+				</div>
 			</div>
 		</div>
 	);

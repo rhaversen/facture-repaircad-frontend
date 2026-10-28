@@ -135,8 +135,8 @@ export function useDesign(designId: string) {
     } catch (err) {
       const misfits = parameterMisfits(err);
       setError(misfits
-        ? "The model did not compile with these values."
-        : `The model did not compile with these values: ${errorText(err, "the change was rejected.")}`);
+        ? "Some values could not be set — see the marked parameters."
+        : errorText(err, "Could not apply the change."));
       return misfits;
     } finally {
       setApplying(false);

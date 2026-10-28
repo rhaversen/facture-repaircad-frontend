@@ -299,7 +299,6 @@ export default function Workspace({
             >
               {requesting ? "Requesting…" : "Get final model →"}
             </button>
-            {unapplied && <span className="text-[12px] text-muted">Apply your changes first</span>}
             {finalError && <span className="text-[12px] text-red-600">{finalError}</span>}
           </div>
         )}

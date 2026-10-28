@@ -2,7 +2,7 @@ import axios from "axios";
 
 import { FLOW_MODEL } from "./config";
 import { FLOW_API_BASE } from "./env";
-import { MAX_PHOTOS } from "./intake";
+import { FORGE_MAX_IMAGES } from "./forge";
 import type { FlowMessage, FlowRun, MessageContentPart, RunningDoc } from "./types";
 
 const flowApi = axios.create({ baseURL: FLOW_API_BASE, withCredentials: true });
@@ -172,20 +172,17 @@ function idPhotoParts(messages: FlowMessage[]): Array<{ id: string; part: Messag
 
 /** The transcript's photos for the Forge handoff: exactly the ones the
     document's id list names (resolved against the ids each user message
-    declares in its text) or — when the document lists none — every photo,
-    so Forge always gets the repair's visual context. */
+    declares in its text). A document that names none sends none. Capped at
+    what one Forge message can carry. */
 export function referencePhotoParts(
   doc: RunningDoc | undefined,
   messages: FlowMessage[],
-  maxPhotos = MAX_PHOTOS,
+  maxPhotos = FORGE_MAX_IMAGES,
 ): MessageContentPart[] {
-  const all = idPhotoParts(messages);
-  if (all.length === 0) return [];
-  const byId = new Map(all.map(({ id, part }) => [id, part]));
   const ids = forgeReferencePhotoIds(doc);
-  /* Emit in the document's send order; missing ids simply drop out. With no
-     ids at all, fall back to every photo so Forge still gets context. */
-  if (ids.length === 0) return all.slice(0, maxPhotos).map(({ part }) => part);
+  if (ids.length === 0) return [];
+  const byId = new Map(idPhotoParts(messages).map(({ id, part }) => [id, part]));
+  /* Emit in the document's send order; missing ids simply drop out. */
   const picked = ids.flatMap((id) => (byId.has(id) ? [byId.get(id) as MessageContentPart] : []));
   return picked.slice(0, maxPhotos);
 }

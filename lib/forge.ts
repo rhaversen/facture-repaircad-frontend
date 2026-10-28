@@ -16,6 +16,10 @@ export function errorText(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
 }
 
+/** Images one Forge message can carry: the per-request cap of its
+    /uploads and the length cap of a chat call's `imageIds` alike. */
+export const FORGE_MAX_IMAGES = 10;
+
 /** Upload images as user-level forge assets; the returned ids ride on the
     next design chat's `imageIds`. */
 export async function uploadImages(files: File[]): Promise<string[]> {

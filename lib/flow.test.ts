@@ -89,12 +89,11 @@ describe("referencePhotoParts", () => {
     expect(referencePhotoParts(doc, transcript())).toEqual([photo("dah0a8ef0")]);
   });
 
-  it("falls back to every transcript photo when the document lists none", () => {
-    expect(referencePhotoParts(undefined, transcript())).toHaveLength(4);
-    expect(referencePhotoParts({ forge_reference_photos: "" } as RunningDoc, transcript()))
-      .toHaveLength(4);
+  it("sends no photos when the document lists none", () => {
+    expect(referencePhotoParts(undefined, transcript())).toEqual([]);
+    expect(referencePhotoParts({ forge_reference_photos: "" } as RunningDoc, transcript())).toEqual([]);
     expect(referencePhotoParts({ forge_reference_photos: "broken" } as RunningDoc, transcript()))
-      .toHaveLength(4);
+      .toEqual([]);
   });
 
   it("caps the photo list, keeping the document's order first", () => {

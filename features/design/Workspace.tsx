@@ -6,6 +6,8 @@ import ReactMarkdown from "react-markdown";
 import CalibrationPanel from "./CalibrationPanel";
 import { guideFrameBox } from "./guides";
 import { CadCanvas, type GuideFrameRequest } from "./viewport";
+import { DownloadIcon, NextIcon } from "@/components/icons";
+import { Button, ErrorBox, Loading, Title } from "@/components/ui";
 import FlowChat from "@/features/planning/FlowChat";
 import { useDesign } from "@/hooks/useDesign";
 import { useFlowRun } from "@/hooks/useFlowRun";
@@ -199,67 +201,58 @@ export default function Workspace({
   if (final) {
     const guidance = doc?.final_guidance?.trim() ?? "";
     return (
-      <div className="flex min-h-[600px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
-        <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="mb-6 flex shrink-0 items-start justify-between gap-5 max-[800px]:flex-col">
-            <div>
-              <h1 className="text-[30px]">Final repair model</h1>
-              <p className="intro mb-0">
-                Rendered from the calibrated design. The repair guidance is drafted from this model.
-              </p>
-            </div>
-            {model && (
-              <button
-                type="button"
-                className="btn-secondary shrink-0 max-[800px]:w-full"
-                onClick={() => downloadBlob(exportScene(model), `${designId}.stl`)}
-              >
-                Download STL
-              </button>
-            )}
-          </div>
+      <div className="flex flex-1 flex-col gap-6">
+        <Title
+          actions={
+            model && (
+              <Button onClick={() => downloadBlob(exportScene(model), `${designId}.stl`)}>
+                <DownloadIcon size={16} />
+                STL
+              </Button>
+            )
+          }
+        >
+          Your repair
+        </Title>
+        <div className="flex min-h-[560px] flex-1 flex-col gap-6 lg:flex-row lg:items-stretch">
           <ModelFrame label={model ? null : "Rendering the final model…"}>
             {model && <CadCanvas model={model} />}
           </ModelFrame>
-        </section>
 
-        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-white lg:flex-1">
-          <div className="flex shrink-0 items-start justify-between gap-5 border-b border-line-soft px-6 py-5 max-[800px]:flex-col max-[800px]:px-5">
-            <div>
-              <h2 className="mb-1.5 text-xl">Repair instructions</h2>
-              <p className="m-0 text-sm leading-relaxed text-muted-2">
-                Fabrication, assembly, and installation guidance for this repair.
-              </p>
+          <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-border/70 bg-surface lg:flex-1">
+            <div className="flex shrink-0 items-center justify-between gap-3 px-5 pt-5 pb-3">
+              <h2 className="text-sm font-medium text-muted">How to repair it</h2>
+              {guidance && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() =>
+                    downloadBlob(
+                      new Blob([guidance], { type: "text/markdown;charset=utf-8" }),
+                      "repair-instructions.md",
+                    )
+                  }
+                >
+                  <DownloadIcon size={14} />
+                  Download
+                </Button>
+              )}
             </div>
-            {guidance && (
-              <button
-                type="button"
-                className="btn-secondary shrink-0 max-[800px]:w-full"
-                onClick={() =>
-                  downloadBlob(
-                    new Blob([guidance], { type: "text/markdown;charset=utf-8" }),
-                    "repair-instructions.md",
-                  )
-                }
-              >
-                Download instructions
-              </button>
-            )}
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5 max-[800px]:max-h-[60vh]">
-            {guidance ? (
-              <div className="markdown-body leading-[1.65]">
-                <ReactMarkdown>{guidance}</ReactMarkdown>
-              </div>
-            ) : (
-              <div className="rounded-[10px] border border-dashed border-[#cbd0d6] p-5 leading-relaxed text-[#7a828d]">
-                {refinementIdle
-                  ? "The assistant finished without writing the instructions. Go back to Refine & Calibrate to continue the conversation."
-                  : "The repair instructions are being written and will appear here when they are ready."}
-              </div>
-            )}
-          </div>
-        </aside>
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 max-lg:max-h-[60vh]">
+              {guidance ? (
+                <div className="markdown-body">
+                  <ReactMarkdown>{guidance}</ReactMarkdown>
+                </div>
+              ) : refinementIdle ? (
+                <p className="rounded-xl border border-dashed border-border p-5 text-sm text-muted">
+                  The assistant stopped without writing the instructions. Go back to Refine to continue.
+                </p>
+              ) : (
+                <Loading className="h-full">Writing the instructions…</Loading>
+              )}
+            </div>
+          </aside>
+        </div>
       </div>
     );
   }
@@ -291,25 +284,23 @@ export default function Workspace({
         hasGuides={(name) => design.guides.some((g) => g.param === name)}
         footer={(unapplied) => (
           <div className="flex flex-col items-end gap-1">
-            <button
-              type="button"
+            <Button
+              variant="primary"
               disabled={!canFinish || unapplied}
               title={unapplied ? "Apply or discard your parameter changes first" : undefined}
               onClick={getFinal}
             >
-              {requesting ? "Requesting…" : "Get final model →"}
-            </button>
-            {finalError && <span className="text-[12px] text-red-600">{finalError}</span>}
+              {requesting ? "Requesting…" : "Finish"}
+              {!requesting && <NextIcon size={16} />}
+            </Button>
+            {finalError && <span className="text-xs text-danger">{finalError}</span>}
           </div>
         )}
       />
 
-      <aside className="flex h-[75dvh] min-h-[420px] min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-white lg:h-auto lg:flex-1">
-        <div className="shrink-0 border-b border-line-soft px-5 py-4.5">
-          <h2 className="mb-1.5 text-lg">Refine your repair</h2>
-          <p className="m-0 text-sm leading-[1.45] text-muted-2">
-            Ask to change the model, clarify a measurement, or inspect the current repair design.
-          </p>
+      <aside className="flex h-[75dvh] min-h-[420px] min-w-0 flex-col overflow-hidden rounded-2xl border border-border/70 bg-surface lg:h-auto lg:flex-1">
+        <div className="shrink-0 border-b border-border/70 px-5 py-3.5">
+          <h2 className="text-sm font-medium text-muted">Ask for changes</h2>
         </div>
         <div className="relative flex min-h-0 flex-1 flex-col">
           {refinementId && hiddenCount !== null && (
@@ -322,8 +313,8 @@ export default function Workspace({
             />
           )}
           {refinementId && (busy || contextStale) && (
-            <p className="m-0 flex shrink-0 items-center gap-2 border-t border-line-soft px-5 py-3 text-sm text-muted-2">
-              <span className="cad-spinner m-0 size-4 shrink-0 border-2" />
+            <p className="flex shrink-0 items-center gap-2 border-t border-border/70 px-5 py-3 text-sm text-muted">
+              <span className="cad-spinner size-4 shrink-0 border-2" />
               {running
                 ? "Forge is updating the design…"
                 : applying
@@ -332,24 +323,19 @@ export default function Workspace({
             </p>
           )}
           {refinementError ? (
-            <div className="m-4">
-              <p className="error-box">{refinementError}</p>
-              <button type="button" className="btn-secondary mt-3" onClick={() => setRefinementError("")}>
-                Try again
-              </button>
+            <div className="m-4 flex flex-col items-start gap-3">
+              <ErrorBox className="w-full">{refinementError}</ErrorBox>
+              <Button onClick={() => setRefinementError("")}>Try again</Button>
             </div>
           ) : (
             (!refinementId || hiddenCount === null) && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/90 p-6 text-center text-sm text-muted-2">
-                <div className="cad-spinner" />
-                <p className="m-0">
-                  {refinementId
-                    ? "Loading the conversation…"
-                    : running
-                      ? "Forge is building the design. The assistant starts when it is done."
-                      : "Starting the refinement assistant…"}
-                </p>
-              </div>
+              <Loading className="absolute inset-0 bg-surface">
+                {refinementId
+                  ? "Loading the conversation…"
+                  : running
+                    ? "Building the design first…"
+                    : "Starting the assistant…"}
+              </Loading>
             )
           )}
         </div>
@@ -372,17 +358,12 @@ function ModelFrame({
   children: React.ReactNode;
 }) {
   return (
-    <div className="relative flex min-h-[420px] min-w-0 flex-1 overflow-hidden rounded-xl border border-line-soft bg-white max-lg:h-[560px]">
+    <div className="relative flex min-h-[420px] min-w-0 flex-1 overflow-hidden rounded-2xl border border-border/70 bg-viewport max-lg:h-[560px]">
       {children}
-      {label && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 p-6 text-center text-ink-soft">
-          <div className="cad-spinner" />
-          <p>{label}</p>
-        </div>
-      )}
-      {dimmed && !label && <div className="pointer-events-none absolute inset-0 bg-white/60" />}
+      {label && <Loading className="absolute inset-0 bg-viewport/80">{label}</Loading>}
+      {dimmed && !label && <div className="pointer-events-none absolute inset-0 bg-viewport/60" />}
       {error && (
-        <p className="absolute right-3 bottom-3 left-3 rounded-md bg-[#fff0f0] px-3 py-2 text-[12px] text-[#a22c2c]">
+        <p className="absolute right-3 bottom-3 left-3 rounded-xl bg-danger/10 px-3 py-2 text-xs text-danger backdrop-blur-md">
           {error}
         </p>
       )}

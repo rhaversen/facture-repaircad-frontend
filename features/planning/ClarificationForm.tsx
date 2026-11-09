@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { Button, Card, ErrorBox, PhotoDrop, textareaClass, Title } from "@/components/ui";
 import PhotoAnnotation from "@/features/intake/PhotoAnnotation";
 import { useIntake } from "@/hooks/useIntake";
 import { annotatedFiles, clarificationMessage } from "@/lib/intake";
@@ -45,68 +46,51 @@ export default function ClarificationForm({
   }
 
   return (
-    <form onSubmit={submit}>
-      <h1>Repair clarification</h1>
-      <p className="intro">Answer the question below. A photo is a perfectly good answer too.</p>
+    <form onSubmit={submit} className="flex flex-col gap-6">
+      <Title subtitle="A photo is a good answer too.">One question</Title>
 
-      <div className="mb-6 grid items-start gap-4 min-[721px]:grid-cols-2">
+      <div className="grid items-start gap-6 min-[721px]:grid-cols-2">
         {question && (
-          <div className="self-stretch rounded-lg bg-surface p-4 whitespace-pre-wrap text-ink-soft wrap-break-word">
-            {question}
-          </div>
+          <Card className="self-stretch">
+            <p className="text-sm leading-relaxed whitespace-pre-wrap wrap-break-word">{question}</p>
+          </Card>
         )}
-        <div className={question ? "" : "min-[721px]:col-span-2"}>
-          <label htmlFor="clarification-response" className="mt-0">
-            Your response
-            <span className="font-normal text-[#7a828d]"> — optional if the photos answer the question</span>
+        <Card className={question ? "" : "min-[721px]:col-span-2"}>
+          <label htmlFor="clarification-response" className="text-sm font-medium">
+            Your answer
           </label>
           <textarea
             id="clarification-response"
             value={answer}
             onChange={(event) => setAnswer(event.target.value)}
             rows={4}
-            placeholder="Add any information that would help understand the repair."
+            placeholder="Optional if the photos answer it"
+            className={textareaClass}
           />
-        </div>
+        </Card>
       </div>
 
-      <h2>Add clarification photos</h2>
-      <p className="mt-2.5 text-sm text-[#6a717b]">
-        Upload the additional views requested. You can optionally mark important parts of each photo.
-      </p>
-      <div className="mt-2 flex flex-wrap items-center justify-end gap-3">
-        <span className="text-sm text-muted-2">
-          {photoLimit === 0
-            ? "This repair already has the maximum number of photos."
-            : `${photos.length}/${photoLimit} photos`}
-        </span>
+      <Card
+        title="Photos"
+        actions={
+          <span className="text-xs text-subtle">
+            {photoLimit === 0 ? "Photo limit reached" : `${photos.length}/${photoLimit}`}
+          </span>
+        }
+      >
         {photos.length < photoLimit && (
-          <label className="btn-outline my-0">
-            Attach photos
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              className="hidden"
-              onChange={(event) => {
-                intake.addPhotos(Array.from(event.target.files ?? []));
-                event.target.value = "";
-              }}
-            />
-          </label>
+          <PhotoDrop onFiles={intake.addPhotos} compact hint="The views asked for; mark them if it helps" />
         )}
-        <button type="submit" disabled={submitting || empty}>
+        {photos.length > 0 && <PhotoAnnotation intake={intake} compact removable />}
+      </Card>
+
+      {error && <ErrorBox>{error}</ErrorBox>}
+
+      <div className="flex justify-end">
+        <Button type="submit" variant="primary" size="lg" disabled={submitting || empty}>
           {submitting ? "Sending…" : "Continue"}
-        </button>
+        </Button>
       </div>
-
-      {photos.length > 0 && (
-        <div className="mt-5">
-          <PhotoAnnotation intake={intake} compact removable />
-        </div>
-      )}
-
-      {error && <p className="error-box">{error}</p>}
     </form>
   );
 }

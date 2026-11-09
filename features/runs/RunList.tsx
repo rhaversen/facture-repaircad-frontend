@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 
+import { NextIcon, PlusIcon, WrenchIcon } from "@/components/icons";
 import Page from "@/components/Page";
+import { Button, Empty, ErrorBox, Loading, Title } from "@/components/ui";
 import { BUILD_LABEL } from "@/lib/config";
 import { listRuns, resolvePipelines, stageOf } from "@/lib/flow";
 import type { FlowRun } from "@/lib/types";
@@ -25,14 +27,21 @@ function stageLabel(run: FlowRun, clarificationNode: string): string {
   }
 }
 
+/* The stage, as the color of a dot beside its word. */
+function stageTone(stage: string): string {
+  if (stage === "Failed") return "bg-danger";
+  if (stage === "Not submitted") return "bg-subtle";
+  if (stage === "Designs ready") return "bg-success";
+  if (stage.startsWith("Awaiting")) return "bg-warning";
+  return "bg-accent";
+}
+
 export default function RunList({
   onOpen,
   onNew,
-  onLogout,
 }: {
   onOpen: (runId: string) => void;
   onNew: () => void;
-  onLogout: () => void;
 }) {
   const [runs, setRuns] = useState<FlowRun[] | null>(null);
   const [clarificationNode, setClarificationNode] = useState("");
@@ -50,62 +59,52 @@ export default function RunList({
       });
   }, []);
 
-  return (
-    <Page>
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="mb-0">Your repairs</h1>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            className="rounded-full px-3.5 py-1.5 text-[13px]"
-            onClick={onNew}
-          >
-            ＋ New repair
-          </button>
-          <button type="button" className="btn-ghost" onClick={onLogout}>
-            Sign out
-          </button>
-        </div>
-      </div>
-      <p className="intro mt-3">Continue an existing repair or start a new one.</p>
+  const newButton = (
+    <Button variant="primary" onClick={onNew}>
+      <PlusIcon size={16} />
+      New repair
+    </Button>
+  );
 
-      {error && <p className="error-box">{error}</p>}
+  return (
+    <Page home narrow>
+      <Title actions={runs !== null && runs.length > 0 ? newButton : undefined}>Repairs</Title>
+
+      {error && <ErrorBox>{error}</ErrorBox>}
 
       {runs === null ? (
-        !error && <p className="text-faint">Loading repairs…</p>
+        !error && <Loading />
       ) : runs.length === 0 ? (
-        <p className="text-faint">No repairs yet. Start your first one with &quot;New repair&quot;.</p>
+        <Empty icon={<WrenchIcon size={28} />} action={newButton}>
+          No repairs yet.
+        </Empty>
       ) : (
-        <ul className="flex list-none flex-col gap-3 p-0">
+        <ul className="flex flex-col gap-3">
           {runs.map((run) => {
             const stage = stageLabel(run, clarificationNode);
             return (
               <li key={run._id}>
                 <button
                   type="button"
-                  className="flex w-full items-center justify-between gap-4 border border-line bg-surface px-4.5 py-4 text-left font-normal text-ink hover:bg-[#eef1f6]"
+                  className="group flex w-full cursor-pointer items-center gap-4 rounded-2xl border border-border/70 bg-surface p-4 text-left transition-colors hover:border-border-strong"
                   onClick={() => onOpen(run._id)}
                 >
-                  <span className="flex min-w-0 flex-col gap-1.5">
-                    <span className="flex items-center gap-2.5 font-semibold">
-                      Repair run
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-[11px] ${
-                          stage === "Failed"
-                            ? "bg-[#fff0f0] text-[#a22c2c]"
-                            : stage === "Not submitted"
-                              ? "bg-[#e7e9ed] text-ink-soft"
-                              : "bg-brand-tint text-[#2c67d7]"
-                        }`}
-                      >
-                        {stage}
-                      </span>
-                    </span>
-                    <span className="text-[13px] text-muted-2">
-                      Created {formatDate(run.createdAt)} · Updated {formatDate(run.updatedAt)}
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-surface-2 text-muted transition-colors group-hover:text-foreground">
+                    <WrenchIcon size={20} />
+                  </span>
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate font-medium">Repair run</span>
+                    <span className="truncate text-xs text-subtle" title={`Created ${formatDate(run.createdAt)}`}>
+                      Updated {formatDate(run.updatedAt)}
                     </span>
                   </span>
-                  <span className="text-sm font-semibold whitespace-nowrap text-brand">Open →</span>
+                  <span className="inline-flex shrink-0 items-center gap-2 text-sm text-muted" title={stage}>
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${stageTone(stage)}`} />
+                    <span className="max-sm:hidden">{stage}</span>
+                  </span>
+                  <span className="text-subtle transition-colors group-hover:text-foreground">
+                    <NextIcon size={16} />
+                  </span>
                 </button>
               </li>
             );
@@ -113,7 +112,7 @@ export default function RunList({
         </ul>
       )}
 
-      <div className="mt-8 text-xs text-faint-2">Build {BUILD_LABEL}</div>
+      <div className="mt-auto pt-4 text-xs text-subtle">Build {BUILD_LABEL}</div>
     </Page>
   );
 }

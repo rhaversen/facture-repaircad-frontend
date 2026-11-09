@@ -1,142 +1,130 @@
 @import "tailwindcss";
 
-/*
-  Tailwind v4 CSS-first config. The component classes below are only the
-  small set that is reused across many files or is impractical as inline
-  utilities (element defaults, markdown styling); everything else lives in
-  the components as inline utilities.
-*/
+/* ── Design tokens ──────────────────────────────────────────────────────────
+ * The shared Facture palette: dark first, light under prefers-color-scheme.
+ * Tailwind reads them through `@theme inline`, so classes like `bg-surface`
+ * or `text-muted` resolve to the variables below.
+ */
+:root {
+  /* Surfaces, darkest at the back */
+  --background: #0e0f12;
+  --surface: #16181d;
+  --surface-2: #1d2026;
+  --surface-3: #262a32;
+  --border: #262a31;
+  --border-strong: #343a45;
 
-@theme {
-  --color-brand: #2448b8;
-  --color-brand-dark: #1d3a99;
-  --color-brand-soft: #e8edff;
-  --color-brand-tint: #eef2fb;
-  --color-ink: #20242a;
-  --color-ink-soft: #30343a;
-  --color-muted: #616975;
-  --color-muted-2: #707782;
-  --color-faint: #858c96;
-  --color-faint-2: #8a9099;
-  --color-line: #e1e4e8;
-  --color-line-soft: #e4e7eb;
-  --color-line-light: #dfe3e8;
-  --color-surface: #f7f8fa;
-  --color-page: #f5f6f8;
+  /* Text */
+  --foreground: #e6e8ec;
+  --muted: #9aa0ac;
+  --subtle: #6b7280;
 
-  --font-sans: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+  /* Accents */
+  --accent: #4c7dff;
+  --accent-hover: #6b93ff;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(59, 130, 246, 0.14);
+
+  /* Semantic */
+  --success: #22c55e;
+  --warning: #eab308;
+  --orange: #f97316;
+  --danger: #ef4444;
+  --purple: #a855f7;
+
+  /* The 3D viewport's backdrop */
+  --viewport: #1b1e24;
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --radius: 12px;
+
+  /* Native controls (checkbox, select popup) follow the theme. */
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --background: #f6f7f9;
+    --surface: #ffffff;
+    --surface-2: #f0f2f5;
+    --surface-3: #e5e8ed;
+    --border: #e6e8ec;
+    --border-strong: #d2d7df;
+    --foreground: #131519;
+    --muted: #565b66;
+    --subtle: #8a909c;
+    --accent-soft: rgba(59, 130, 246, 0.1);
+    --viewport: #ffffff;
+    color-scheme: light;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-contrast: var(--accent-contrast);
+  --color-accent-soft: var(--accent-soft);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-orange: var(--orange);
+  --color-danger: var(--danger);
+  --color-purple: var(--purple);
+  --color-viewport: var(--viewport);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --radius: var(--radius);
 }
 
 @layer base {
+  body {
+    min-width: 320px;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+    color: var(--foreground);
+  }
+
   * {
-    box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
   }
-
-  html,
-  body {
-    margin: 0;
-    width: 100%;
-    min-height: 100%;
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
   }
-
-  body {
-    @apply min-w-[320px] bg-page font-sans text-ink;
+  *::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: padding-box;
   }
-
-  h1 {
-    @apply mb-3 text-[36px] leading-[1.15] font-bold;
-  }
-
-  label {
-    @apply mt-7 mb-2.5 block font-semibold;
-  }
-
-  textarea,
-  select,
-  input {
-    font: inherit;
-  }
-
-  textarea {
-    @apply min-h-[7.5rem] w-full resize-y rounded-[10px] border border-[#cbd0d6] bg-white px-4 py-3.5 leading-relaxed;
-  }
-
-  select {
-    @apply mt-2 w-full rounded-lg border border-[#cbd0d6] bg-white px-3 py-2.5 text-ink;
-  }
-
-  textarea:focus,
-  select:focus {
-    @apply border-transparent outline-2 outline-[#4d72df];
-  }
-
-  button {
-    @apply cursor-pointer rounded-[10px] bg-brand px-5 py-3 font-semibold text-white transition-colors;
-  }
-
-  button:hover:not(:disabled) {
-    @apply bg-brand-dark;
-  }
-
-  button:active:not(:disabled) {
-    @apply translate-y-px;
-  }
-
-  button:focus-visible {
-    @apply outline-2 outline-offset-2 outline-[#4d72df];
-  }
-
-  button:disabled {
-    @apply cursor-not-allowed bg-[#b9bec7];
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--subtle);
+    background-clip: padding-box;
   }
 }
 
 @layer components {
-  /* Reused composites — everything else lives inline as utilities. */
-  .text-input {
-    @apply w-full rounded-lg border border-[#cbd0d6] bg-white px-3 py-2.5;
-  }
-
-  .text-input:focus {
-    @apply border-transparent outline-2 outline-offset-1 outline-[#4d72df];
-  }
-
-  .btn-secondary {
-    @apply bg-[#e7e9ed] text-ink-soft hover:bg-[#d8dce2];
-  }
-
-  .btn-ghost {
-    @apply bg-transparent px-2.5 py-1.5 text-[13px] text-muted hover:bg-[#f1f2f4];
-  }
-
-  .btn-outline {
-    @apply flex cursor-pointer items-center justify-center rounded-[10px] border border-brand bg-white px-4.5 py-3 font-semibold text-brand hover:bg-[#f6f8ff];
-  }
-
-  .btn-link {
-    @apply bg-transparent px-0 font-medium text-[#a22c2c] hover:bg-transparent hover:underline;
-  }
-
-  .intro {
-    @apply mb-9 text-[17px] leading-relaxed text-muted;
-  }
-
-  .nav-row {
-    @apply mt-9 flex justify-between gap-4 max-[640px]:flex-col-reverse;
-  }
-
-  .error-box {
-    @apply mt-4 rounded-lg bg-[#fff0f0] px-3.5 py-3 text-sm text-[#a22c2c];
-  }
-
-  .btn-utility {
-    @apply bg-transparent px-2 py-1 text-[11px] text-[#a7adba] hover:bg-[#f1f2f4] hover:text-ink-soft;
-  }
-
   /* Markdown-rendered repair instructions (ReactMarkdown output). */
   .markdown-body {
     overflow-wrap: anywhere;
+    font-size: 0.9375rem;
+    line-height: 1.65;
   }
 
   .markdown-body h1,
@@ -145,6 +133,15 @@
     margin-top: 24px;
     margin-bottom: 10px;
     line-height: 1.3;
+    font-weight: 600;
+  }
+
+  .markdown-body h1 {
+    font-size: 1.25rem;
+  }
+
+  .markdown-body h2 {
+    font-size: 1.125rem;
   }
 
   .markdown-body > :first-child {
@@ -161,29 +158,36 @@
     padding-left: 24px;
   }
 
+  .markdown-body ul {
+    list-style: disc;
+  }
+
+  .markdown-body ol {
+    list-style: decimal;
+  }
+
   .markdown-body li + li {
     margin-top: 6px;
   }
 
   .markdown-body code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 0.92em;
   }
 
   .markdown-body pre {
     overflow-x: auto;
     padding: 14px;
-    border-radius: 8px;
-    background: #f1f3f5;
+    border-radius: 12px;
+    background: var(--surface-2);
   }
 
-  /* Shared loading spinner (Forge viewport + design picker). */
+  /* Shared loading spinner (viewports, design picker, chat). */
   .cad-spinner {
-    width: 40px;
-    height: 40px;
-    margin: 0 auto 18px;
-    border: 3px solid #d5d9e0;
-    border-top-color: #2448b8;
+    width: 32px;
+    height: 32px;
+    border: 3px solid var(--surface-3);
+    border-top-color: var(--accent);
     border-radius: 50%;
     animation: cad-spin 0.9s linear infinite;
   }
@@ -194,10 +198,10 @@
     }
   }
 
-  /* Parameter slider (forge-style, adapted to this app's palette): the whole
-     track is one gradient, --track, which the component sets inline from
-     these colors — in range, the part left of the thumb is filled; out of
-     range, the viable span is filled and the overshoot shows in --track-over. */
+  /* Parameter slider: the whole track is one gradient, --track, which the
+     component sets inline from these colors. In range, the part left of the
+     thumb is filled; out of range, the viable span is filled and the
+     overshoot shows in --track-over. */
   .forge-slider {
     appearance: none;
     width: 100%;
@@ -206,15 +210,18 @@
     cursor: pointer;
     position: relative;
     z-index: 1;
-    --track-fill: #2448b8;
-    --track-rest: #e1e4e8;
-    --track-over: #d64545;
+    --track-fill: var(--accent);
+    --track-rest: var(--surface-3);
+    --track-over: var(--danger);
     --track: var(--track-rest);
   }
   .forge-slider:hover,
   .forge-slider:focus-visible,
   .forge-slider:active {
     z-index: 2;
+  }
+  .forge-slider:focus-visible {
+    outline: none;
   }
   .forge-slider::-webkit-slider-runnable-track {
     height: 4px;
@@ -227,19 +234,19 @@
     height: 12px;
     margin-top: -4px;
     border-radius: 9999px;
-    background: #ffffff;
-    border: 2px solid #2448b8;
+    background: var(--surface);
+    border: 2px solid var(--accent);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
     transition: transform 0.12s ease, box-shadow 0.12s ease;
   }
   .forge-slider:hover::-webkit-slider-thumb,
   .forge-slider:focus-visible::-webkit-slider-thumb {
     transform: scale(1.25);
-    box-shadow: 0 0 0 4px #e8edff;
+    box-shadow: 0 0 0 4px var(--accent-soft);
   }
   .forge-slider:active::-webkit-slider-thumb {
     transform: scale(1.15);
-    background: #2448b8;
+    background: var(--accent);
   }
   .forge-slider:disabled {
     cursor: default;
@@ -263,15 +270,15 @@
     width: 8px;
     height: 8px;
     border-radius: 9999px;
-    background: #ffffff;
-    border: 2px solid #2448b8;
+    background: var(--surface);
+    border: 2px solid var(--accent);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
     transition: transform 0.12s ease, box-shadow 0.12s ease;
   }
   .forge-slider:hover::-moz-range-thumb,
   .forge-slider:focus-visible::-moz-range-thumb {
     transform: scale(1.25);
-    box-shadow: 0 0 0 4px #e8edff;
+    box-shadow: 0 0 0 4px var(--accent-soft);
   }
   .forge-slider:disabled::-moz-range-thumb {
     transform: none;
@@ -279,8 +286,8 @@
   }
 
   /* A staged value outside the viable range: the thumb pins to the end and
-     takes the overshoot's color. Separate rules — a browser drops a whole
-     rule over the other engine's pseudo-element. */
+     takes the overshoot's color. Separate rules, since a browser drops a
+     whole rule over the other engine's pseudo-element. */
   .forge-slider[data-out]::-webkit-slider-thumb {
     border-color: var(--track-over);
   }
@@ -289,7 +296,7 @@
   }
 
   /* Numeric companion input for the sliders: the browser spin buttons are
-     hidden — the slider is the pointer affordance, and the arrow keys still
+     hidden; the slider is the pointer affordance, and the arrow keys still
      step the value while the field is focused. */
   .forge-number::-webkit-outer-spin-button,
   .forge-number::-webkit-inner-spin-button {

@@ -2,14 +2,12 @@
 
 import dynamic from "next/dynamic";
 
+import { Loading } from "@/components/ui";
+
 // three.js touches window APIs during import; keep the app client-only.
 const RepairCADApp = dynamic(() => import("./RepairCADApp"), {
   ssr: false,
-  loading: () => (
-    <div className="flex min-h-screen justify-center px-6 pt-24">
-      <h1>Loading…</h1>
-    </div>
-  ),
+  loading: () => <Loading className="min-h-dvh" />,
 });
 
 export default function Home() {

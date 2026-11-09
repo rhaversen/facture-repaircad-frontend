@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import Page from "@/components/Page";
+import { Loading } from "@/components/ui";
 import ClarificationForm from "./ClarificationForm";
 import FlowChat from "./FlowChat";
 import { fetchMessages } from "@/lib/flow";
@@ -61,7 +62,7 @@ function Clarification({
     };
   }, [runId]);
 
-  if (context === null) return <p className="text-faint">Loading the question…</p>;
+  if (context === null) return <Loading className="flex-1">Loading the question…</Loading>;
   return (
     <ClarificationForm
       question={context.question}

@@ -52,7 +52,7 @@ export default function FlowChat({
       ref={frame}
       title={title}
       src={`${FLOW_EMBED_BASE}?${params}`}
-      className="h-full min-h-[420px] w-full flex-1 bg-black"
+      className="h-full min-h-[420px] w-full flex-1 bg-background"
       allow="clipboard-write"
     />
   );

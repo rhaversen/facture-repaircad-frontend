@@ -3,6 +3,8 @@
 import { useState } from "react";
 
 import { CadCanvas } from "./viewport";
+import { CheckIcon, NextIcon } from "@/components/icons";
+import { Button, cn, Title } from "@/components/ui";
 import { useDesign } from "@/hooks/useDesign";
 
 /*
@@ -26,35 +28,31 @@ export default function Picker({
 
   return (
     <section className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 max-[640px]:px-5">
-        <h1 className="pt-6 text-[30px]">Choose a rough shape for the design</h1>
-        <p className="intro mb-4">
-          Several candidates were generated from your repair plan. Select the one you want. This
-          step is only about getting the right <strong>shape</strong>: the next step asks for
-          accurate measurements, so no need to judge the exact dimensions here.
-        </p>
-        <div className="grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
-          {designIds.map((id, index) => (
-            <Tile
-              key={id}
-              designId={id}
-              handoff={handoffs[index] ?? handoffs[0]}
-              number={index + 1}
-              selected={id === selected}
-              onSelect={() => setSelected(id)}
-            />
-          ))}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6">
+          <Title subtitle="Pick the closest shape. Sizes come next.">Pick a design</Title>
+          <div className="grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
+            {designIds.map((id, index) => (
+              <Tile
+                key={id}
+                designId={id}
+                handoff={handoffs[index] ?? handoffs[0]}
+                number={index + 1}
+                selected={id === selected}
+                onSelect={() => setSelected(id)}
+              />
+            ))}
+          </div>
         </div>
       </div>
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-line bg-white px-6 py-4 max-[640px]:px-5">
-        <span className="text-[14px] text-muted">
-          {number > 0
-            ? `Design ${number} is selected. Pick another tile to switch.`
-            : "Select a design to continue."}
-        </span>
-        <button type="button" disabled={selected === null} onClick={() => onContinue(selected!)}>
-          {number > 0 ? `Continue with Design ${number} →` : "Continue →"}
-        </button>
+      <div className="shrink-0 border-t border-border/60 bg-background/80 backdrop-blur-md">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+          <span className="text-sm text-muted">{number > 0 ? `Design ${number}` : "Pick one to continue"}</span>
+          <Button variant="primary" disabled={selected === null} onClick={() => onContinue(selected!)}>
+            Continue
+            <NextIcon size={16} />
+          </Button>
+        </div>
       </div>
     </section>
   );
@@ -84,45 +82,38 @@ function Tile({
 
   return (
     <div
-      className={`flex flex-col gap-2.5 rounded-xl border-2 bg-white p-2.5 ${
-        selected
-          ? "border-brand shadow-[0_0_0_3px_rgba(36,72,184,0.15)]"
-          : "border-line-soft hover:border-[#b9c2d0]"
-      }`}
+      className={cn(
+        "flex flex-col gap-3 rounded-2xl border bg-surface p-3 transition-colors",
+        selected ? "border-accent ring-2 ring-accent-soft" : "border-border/70 hover:border-border-strong",
+      )}
     >
-      <div className="relative h-[380px] overflow-hidden rounded-lg border border-line-soft bg-white max-[900px]:h-[320px]">
+      <div className="relative h-[360px] overflow-hidden rounded-xl bg-viewport max-[900px]:h-[300px]">
         {model && <CadCanvas model={model} autoRotate />}
         {overlay && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center text-ink-soft">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted">
             {!missing && !failed && <div className="cad-spinner" />}
             <p>{overlay}</p>
-            {failed && (
-              <button type="button" className="btn-secondary mt-3" onClick={() => void send(handoff)}>
-                Try again
-              </button>
-            )}
+            {failed && <Button onClick={() => void send(handoff)}>Try again</Button>}
           </div>
         )}
         {model && running && (
-          <span className="absolute top-2 left-2 rounded bg-white/90 px-2 py-1 text-xs text-muted">
-            Forge is still working…
+          <span className="absolute top-2 left-2 rounded-full bg-surface/90 px-2.5 py-1 text-xs text-muted">
+            Still working…
           </span>
         )}
       </div>
-      <div className="flex items-center justify-between gap-2.5">
-        <span className="text-sm font-semibold text-ink-soft">Design {number}</span>
-        <button
-          type="button"
-          className={`rounded-lg border px-3 py-1 text-[13px] font-normal ${
-            selected
-              ? "border-brand disabled:bg-brand disabled:text-white"
-              : "border-[#d5d9e0] bg-white text-muted hover:border-brand hover:bg-white hover:text-brand disabled:bg-white disabled:opacity-50"
-          }`}
+      <div className="flex items-center justify-between gap-2.5 pl-1">
+        <span className="text-sm font-medium">Design {number}</span>
+        <Button
+          size="sm"
+          variant={selected ? "primary" : "secondary"}
+          className={selected ? "disabled:opacity-100" : undefined}
           disabled={!ready || selected}
           onClick={onSelect}
         >
-          {selected ? "✓ Selected" : ready ? "Select" : missing || failed ? "Unavailable" : "Generating…"}
-        </button>
+          {selected && <CheckIcon size={14} />}
+          {selected ? "Selected" : ready ? "Select" : missing || failed ? "Unavailable" : "Generating…"}
+        </Button>
       </div>
     </div>
   );

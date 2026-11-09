@@ -51,7 +51,7 @@ export default function AnnotationCanvas({
     <div
       ref={canvasRef}
       {...pointerHandlers}
-      className={`relative mx-auto w-fit max-w-full overflow-hidden rounded-lg border border-line-light bg-[#f2f3f5] select-none ${
+      className={`relative mx-auto w-fit max-w-full overflow-hidden rounded-xl bg-surface-2 select-none ${
         pointerHandlers ? "cursor-crosshair touch-none" : ""
       }`}
     >
@@ -72,7 +72,7 @@ export default function AnnotationCanvas({
       {annotations.map((annotation) => (
         <span
           key={annotation.id}
-          className="pointer-events-none absolute px-1.5 py-0.5 text-xs wrap-break-word text-white"
+          className="pointer-events-none absolute rounded-t-md px-1.5 py-0.5 text-xs wrap-break-word text-white"
           style={{ background: annotation.color, ...labelStyle(annotation.box) }}
         >
           {annotation.label || "Unnamed"}
@@ -80,7 +80,7 @@ export default function AnnotationCanvas({
       ))}
       {draftBox && (
         <div
-          className="pointer-events-none absolute border-[3px] border-dashed border-[#555] bg-white/15"
+          className="pointer-events-none absolute border-2 border-dashed border-white bg-white/15 shadow-[0_0_0_1px_rgba(0,0,0,0.4)]"
           style={boxStyle(draftBox)}
         />
       )}

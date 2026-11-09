@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { Button, cn } from "@/components/ui";
 import type { Parameter } from "@/lib/types";
 
 /** "wall_thickness" → "Wall Thickness". */
@@ -128,9 +129,10 @@ function ParameterRow({
 		<div
 			// Row-wide selection: hovering or clicking anywhere picks this
 			// parameter's guides and deselects every other parameter's.
-			className={`flex cursor-pointer flex-col gap-0.5 rounded-md border px-2 py-1.5 transition-colors ${
-				active ? "border-brand bg-[#f6f8fd]" : "border-transparent hover:bg-[#f6f8fd]"
-			}`}
+			className={cn(
+				"flex cursor-pointer flex-col gap-0.5 rounded-xl px-2.5 py-1.5 transition-colors",
+				active ? "bg-surface-2 ring-1 ring-accent/60" : "hover:bg-surface-2",
+			)}
 			onMouseEnter={() => onSelect(parameter.name)}
 			onClick={() => onSelect(parameter.name)}
 		>
@@ -139,12 +141,12 @@ function ParameterRow({
 					{/* The changed marker: a staged value waiting for Apply. */}
 					{changed ? (
 						<span
-							className="size-1.5 shrink-0 rounded-full bg-[#d97706]"
+							className="size-1.5 shrink-0 rounded-full bg-warning"
 							title="Changed — click Apply to rebuild the model"
 						/>
 					) : null}
 					<span
-						className={`min-w-0 truncate text-[13px] leading-snug ${changed ? "font-medium text-ink" : "text-ink-soft"}`}
+						className={`min-w-0 truncate text-[13px] leading-snug ${changed ? "font-medium text-foreground" : "text-muted"}`}
 						title={parameter.description}
 					>
 						{formatName(parameter.name)}
@@ -161,7 +163,7 @@ function ParameterRow({
 							}}
 							disabled={disabled}
 							title={`Back to the default (${formatValue(parameter.default, decimals)} ${unit.trim()})`}
-							className="rounded bg-transparent px-1 text-[11px] text-muted transition-colors hover:bg-brand-tint hover:text-ink disabled:opacity-40"
+							className="cursor-pointer rounded-full px-1.5 text-[11px] text-subtle transition-colors hover:bg-surface-3 hover:text-foreground disabled:opacity-40"
 						>
 							reset
 						</button>
@@ -179,9 +181,10 @@ function ParameterRow({
 								onShowGuideCamera?.(parameter.name);
 							}}
 							title="Show guides and frame them in the viewport"
-							className={active
-								? "rounded bg-transparent px-1 text-[11px] font-medium text-brand-dark hover:bg-brand-tint"
-								: "rounded bg-transparent px-1 text-[11px] text-muted hover:bg-brand-tint hover:text-brand-dark"}
+							className={cn(
+								"cursor-pointer rounded-full px-1.5 text-[11px] transition-colors hover:bg-surface-3 disabled:opacity-40",
+								active ? "font-medium text-accent" : "text-subtle hover:text-accent",
+							)}
 							disabled={disabled}
 						>
 							show guide
@@ -224,9 +227,10 @@ function ParameterRow({
 					ref={inputRef}
 					type="text"
 					inputMode="decimal"
-					className={`forge-number w-16 shrink-0 rounded border bg-transparent px-1.5 py-0.5 text-right text-xs text-ink focus:border-transparent focus:outline-2 focus:outline-[#4d72df] ${
-						below || above || misfit ? "border-[#d64545]" : "border-[#cbd0d6]"
-					}`}
+					className={cn(
+						"forge-number w-16 shrink-0 rounded-lg bg-surface-3/70 px-1.5 py-0.5 text-right text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-accent",
+						(below || above || misfit) && "text-danger ring-1 ring-danger",
+					)}
 					value={text ?? formatValue(value, decimals)}
 					disabled={disabled}
 					onChange={(e) => {
@@ -244,11 +248,11 @@ function ParameterRow({
 				/>
 				{/* "w-6" is "deg"'s measured width at this 12px face — every
 				    row reserves it so all sliders stay the same length. */}
-				<span className="w-6 shrink-0 text-right text-[12px] text-muted">
+				<span className="w-6 shrink-0 text-right text-[12px] text-subtle">
 					{unit.trim()}
 				</span>
 			</div>
-			{note ? <p className="m-0 text-[11px] leading-snug text-[#a22c2c]">{note}</p> : null}
+			{note ? <p className="text-[11px] leading-snug text-danger">{note}</p> : null}
 		</div>
 	);
 }
@@ -314,16 +318,13 @@ export default function CalibrationPanel({
 	};
 
 	return (
-		<div className="flex w-full min-w-0 flex-col gap-2 self-stretch rounded-xl bg-surface p-3 lg:flex-1">
-			<div>
-				<h2 className="mb-0.5 text-[15px]">Calibrate the model</h2>
-				<p className="text-[12px] leading-[1.45] text-muted">Set how the parts fit together, then apply</p>
-			</div>
+		<div className="flex w-full min-w-0 flex-col gap-2 self-stretch rounded-2xl border border-border/70 bg-surface p-3 lg:flex-1">
+			<h2 className="px-2 pt-1 text-sm font-medium text-muted">Sizes</h2>
 			{/* Bottom padding keeps the last row's selection border clear of the
 			    action bar when scrolled to the end. */}
 			<div className="flex flex-1 flex-col gap-0.5 overflow-y-auto pr-1 pb-2">
 				{parameters.length === 0 && (
-					<p className="text-[13px] text-muted">This design has no adjustable parameters.</p>
+					<p className="px-2 text-sm text-subtle">Nothing to adjust on this design.</p>
 				)}
 				{parameters.map((parameter) => (
 					<ParameterRow
@@ -343,8 +344,8 @@ export default function CalibrationPanel({
 			{/* The action bar: what is pending above, then Apply on the left
 			    and the footer's action on the right. Unapplied changes enable
 			    Apply and hold the footer back, so one of them is live at a time. */}
-			<div className="flex flex-col gap-2 border-t border-line-soft pt-2">
-				<div className="flex min-h-5 items-center justify-between gap-2 text-[12px] text-muted">
+			<div className="flex flex-col gap-2 border-t border-border/70 px-1 pt-2">
+				<div className="flex min-h-5 items-center justify-between gap-2 text-xs text-subtle">
 					<span className="flex items-center gap-1">
 						{count === 0
 							? "No unapplied changes"
@@ -357,7 +358,7 @@ export default function CalibrationPanel({
 									setMisfits({});
 								}}
 								disabled={disabled}
-								className="rounded bg-transparent px-1 text-[11px] text-muted hover:bg-brand-tint hover:text-ink disabled:opacity-40"
+								className="cursor-pointer rounded-full px-1.5 text-[11px] text-subtle transition-colors hover:bg-surface-3 hover:text-foreground disabled:opacity-40"
 							>
 								discard
 							</button>
@@ -369,13 +370,9 @@ export default function CalibrationPanel({
 				</div>
 				<div className="flex items-start justify-between gap-2">
 					{parameters.length > 0 ? (
-						<button
-							type="button"
-							disabled={disabled || count === 0}
-							onClick={() => void apply()}
-						>
+						<Button disabled={disabled || count === 0} onClick={() => void apply()}>
 							Apply
-						</button>
+						</Button>
 					) : (
 						<span />
 					)}

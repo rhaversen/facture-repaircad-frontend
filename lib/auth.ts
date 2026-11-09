@@ -9,6 +9,8 @@ export function authUrl(): string {
 export interface FactureUser {
   id: string;
   displayName: string;
+  /** Sent by the auth service; shown in the account menu when present. */
+  email?: string;
 }
 
 /** Confirm the shared Facture session cookie is still valid; null if not. */

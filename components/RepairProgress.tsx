@@ -1,11 +1,13 @@
+import { cn } from "./ui";
+
 const STEPS = [
-  "Describe & Photos",
+  "Describe",
   "Annotate",
   "Review",
-  "Repair Planning",
-  "Select Initial Design",
-  "Refine & Calibrate",
-  "Repair Guidance",
+  "Planning",
+  "Pick a design",
+  "Refine",
+  "Guidance",
 ];
 
 export interface ProgressProps {
@@ -21,7 +23,8 @@ export interface ProgressProps {
 /*
   The seven-step timeline. It only ever navigates backwards within the current
   section (intake, or designs): earlier sections are done for good, and
-  forward moves belong to the page's own buttons.
+  forward moves belong to the page's own buttons. On narrow screens only the
+  current step keeps its label.
 */
 export default function RepairProgress({
   step,
@@ -30,7 +33,7 @@ export default function RepairProgress({
   clarification = false,
 }: ProgressProps) {
   return (
-    <ol className="m-0 flex w-full min-w-0 list-none items-start p-0">
+    <ol className="flex w-full min-w-0 items-start">
       {STEPS.map((label, index) => {
         const n = index + 1;
         const done = n < step;
@@ -39,39 +42,41 @@ export default function RepairProgress({
         return (
           <li
             key={label}
-            className={`relative flex min-w-0 flex-1 flex-col items-center text-center ${
-              n < STEPS.length
-                ? `after:absolute after:top-[13px] after:left-[calc(50%+14px)] after:h-0.5 after:w-[calc(100%-28px)] ${
-                    done ? "after:bg-[#2c67d7]" : "after:bg-[#d9dde5]"
-                  }`
-                : ""
-            }`}
+            className={cn(
+              "relative flex min-w-0 flex-1 flex-col items-center text-center",
+              n < STEPS.length &&
+                "after:absolute after:top-[11px] after:left-[calc(50%+16px)] after:h-px after:w-[calc(100%-32px)]",
+              n < STEPS.length && (done ? "after:bg-accent" : "after:bg-border-strong"),
+            )}
           >
             <button
               type="button"
               aria-current={current ? "step" : undefined}
               disabled={!clickable}
-              title={clickable ? `Back to ${label}` : undefined}
+              title={clickable ? `Back to ${label}` : label}
               onClick={() => onStep?.(n)}
-              className={`relative z-[1] m-0 flex h-7 w-7 items-center justify-center rounded-full border-2 p-0 text-[13px] font-semibold disabled:cursor-default ${
+              className={cn(
+                "relative z-[1] flex h-6 w-6 items-center justify-center rounded-full text-xs font-medium transition-shadow",
                 current
-                  ? "border-[#2c67d7] bg-white text-[#2c67d7] shadow-[0_0_0_4px_rgba(44,103,215,0.12)] disabled:bg-white"
+                  ? "bg-accent text-accent-contrast ring-4 ring-accent-soft"
                   : done
-                    ? "border-[#2c67d7] bg-[#2c67d7] text-white disabled:bg-[#2c67d7]"
-                    : "border-[#c7ccd6] bg-white text-[#747b87] disabled:bg-white"
-              } ${clickable ? "hover:shadow-[0_0_0_5px_rgba(44,103,215,0.22)]" : ""}`}
+                    ? "bg-accent-soft text-accent"
+                    : "bg-surface-2 text-subtle",
+                clickable ? "cursor-pointer hover:ring-4 hover:ring-accent-soft" : "cursor-default",
+              )}
             >
               {done ? "✓" : n}
             </button>
             <div
-              className={`mt-1.5 flex w-full items-start justify-center gap-1 px-1 text-[11px] leading-[1.2] break-words ${
-                current ? "font-bold text-[#1f2937]" : done ? "text-[#4c5563]" : "text-[#747b87]"
-              }`}
+              className={cn(
+                "mt-1.5 flex w-full items-start justify-center gap-1 px-1 text-[11px] leading-tight break-words",
+                current ? "font-medium text-foreground" : "text-subtle max-sm:invisible",
+              )}
             >
               <span className="min-w-0">{label}</span>
               {n === 4 && current && clarification && (
-                <span className="shrink-0 rounded bg-brand-tint px-1.5 text-[10px] leading-[13px] font-medium whitespace-nowrap text-[#2c67d7]">
-                  Clarification
+                <span className="shrink-0 rounded-full bg-warning/15 px-1.5 text-[10px] font-medium whitespace-nowrap text-warning">
+                  Question
                 </span>
               )}
             </div>

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import Page from "@/components/Page";
+import { Button, ErrorBox, Loading } from "@/components/ui";
 import Picker from "./Picker";
 import Workspace from "./Workspace";
 import { createDesign, errorText, sendDesignMessage, uploadImages } from "@/lib/forge";
@@ -98,30 +99,22 @@ export default function DesignStage({ run, onAllRuns }: { run: FlowRun; onAllRun
           initial={designId}
           onContinue={edit}
         />
-      ) : (
-        <div className="flex flex-1 flex-col items-center justify-center p-6 text-center text-ink-soft">
-          {error ? (
-            <>
-              <strong className="mb-2 text-lg">Forge could not start the designs.</strong>
-              <p className="text-muted">{error}</p>
-              <button
-                type="button"
-                className="mt-4"
-                onClick={() => {
-                  setError("");
-                  generate();
-                }}
-              >
-                Try again
-              </button>
-            </>
-          ) : (
-            <>
-              <div className="cad-spinner" />
-              <p>Starting the designs…</p>
-            </>
-          )}
+      ) : error ? (
+        <div className="mx-auto flex w-full max-w-md flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
+          <p className="font-medium">Forge could not start the designs.</p>
+          <ErrorBox className="w-full">{error}</ErrorBox>
+          <Button
+            variant="primary"
+            onClick={() => {
+              setError("");
+              generate();
+            }}
+          >
+            Try again
+          </Button>
         </div>
+      ) : (
+        <Loading className="flex-1">Starting the designs…</Loading>
       )}
     </Page>
   );

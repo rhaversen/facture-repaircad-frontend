@@ -2,13 +2,15 @@
 
 import { useEffect, useState } from "react";
 
+import { AccountContext, type Account } from "@/components/Account";
 import Page from "@/components/Page";
+import { ErrorBox, Loading } from "@/components/ui";
 import DesignStage from "@/features/design/DesignStage";
 import Intake from "@/features/intake/Intake";
 import Planning from "@/features/planning/Planning";
 import RunList from "@/features/runs/RunList";
 import { useFlowRun } from "@/hooks/useFlowRun";
-import { authUrl, getMe, logout } from "@/lib/auth";
+import { authUrl, getMe, logout, type FactureUser } from "@/lib/auth";
 import { createRun, resolvePipelines, sendMessage, stageOf, type Pipelines } from "@/lib/flow";
 import { forgetRun, loadActiveRun, storeActiveRun } from "@/lib/store";
 
@@ -26,14 +28,17 @@ export default function RepairCADApp() {
   const [pipelines, setPipelines] = useState<Pipelines | null>(null);
   const [failed, setFailed] = useState("");
   const [open, setOpen] = useState<string | "new" | null>(null);
+  const [user, setUser] = useState<FactureUser | null>(null);
 
   useEffect(() => {
     (async () => {
       // The shared Facture session cookie is the only sign-in.
-      if ((await getMe()) === null) {
+      const me = await getMe();
+      if (me === null) {
         window.location.assign(authUrl());
         return;
       }
+      setUser(me);
       setPipelines(await resolvePipelines());
       setOpen(loadActiveRun());
       setReady(true);
@@ -48,42 +53,52 @@ export default function RepairCADApp() {
     setOpen(runId);
   }
 
-  if (failed) {
-    return (
-      <Page>
-        <p className="error-box">{failed}</p>
-      </Page>
-    );
-  }
-  if (!ready || pipelines === null) return null;
+  // The menu bar's account pill, on every screen.
+  const account: Account = {
+    user,
+    onLogout: async () => {
+      await logout();
+      window.location.assign(authUrl());
+    },
+  };
 
-  if (open === null) {
-    return (
-      <RunList
-        onOpen={openRun}
-        onNew={() => openRun("new")}
-        onLogout={async () => {
-          await logout();
-          window.location.assign(authUrl());
-        }}
-      />
-    );
-  }
+  return <AccountContext.Provider value={account}>{screen()}</AccountContext.Provider>;
 
-  if (open === "new") {
-    return (
-      <Intake
-        onAllRuns={() => openRun(null)}
-        onSubmit={async (message, files) => {
-          const run = await createRun(pipelines.main);
-          await sendMessage(run._id, message, files);
-          openRun(run._id);
-        }}
-      />
-    );
-  }
+  function screen() {
+    if (failed) {
+      return (
+        <Page narrow>
+          <ErrorBox>{failed}</ErrorBox>
+        </Page>
+      );
+    }
+    if (!ready || pipelines === null) {
+      return (
+        <Page narrow>
+          <Loading className="flex-1" />
+        </Page>
+      );
+    }
 
-  return <OpenRun key={open} runId={open} pipelines={pipelines} onAllRuns={() => openRun(null)} />;
+    if (open === null) {
+      return <RunList onOpen={openRun} onNew={() => openRun("new")} />;
+    }
+
+    if (open === "new") {
+      return (
+        <Intake
+          onAllRuns={() => openRun(null)}
+          onSubmit={async (message, files) => {
+            const run = await createRun(pipelines.main);
+            await sendMessage(run._id, message, files);
+            openRun(run._id);
+          }}
+        />
+      );
+    }
+
+    return <OpenRun key={open} runId={open} pipelines={pipelines} onAllRuns={() => openRun(null)} />;
+  }
 }
 
 function OpenRun({
@@ -106,8 +121,8 @@ function OpenRun({
 
   if (run === null) {
     return (
-      <Page onAllRuns={onAllRuns}>
-        <p className={error ? "error-box" : "text-faint"}>{error || "Loading your repair…"}</p>
+      <Page onAllRuns={onAllRuns} narrow>
+        {error ? <ErrorBox>{error}</ErrorBox> : <Loading className="flex-1">Loading your repair…</Loading>}
       </Page>
     );
   }

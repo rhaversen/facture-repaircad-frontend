@@ -2,7 +2,9 @@
 
 import { useState } from "react";
 
+import { BackIcon, CloseIcon, NextIcon } from "@/components/icons";
 import Page from "@/components/Page";
+import { Button, Card, ErrorBox, Muted, PhotoDrop, textareaClass, Title } from "@/components/ui";
 import AnnotationCanvas from "./AnnotationCanvas";
 import PhotoAnnotation from "./PhotoAnnotation";
 import { useIntake } from "@/hooks/useIntake";
@@ -52,155 +54,154 @@ export default function Intake({
   return (
     <Page progress={progress} onAllRuns={onAllRuns}>
       {step === 1 && (
-        <div className="flex flex-col gap-8 lg:flex-row lg:items-start lg:gap-12">
-          <section className="flex min-w-0 flex-1 flex-col">
-            <h1>Describe your repair</h1>
-            <p className="intro">
-              Tell us what happened. You can add photos to show the object and the repair area.
-            </p>
-            <label htmlFor="description">What happened and what is broken or missing?</label>
-            <textarea
-              id="description"
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              placeholder="For example: The cabinet handle broke off and the broken piece is missing."
-              rows={10}
-            />
-          </section>
-
-          <aside className="flex w-full shrink-0 flex-col lg:w-[400px]">
-            <div className="flex items-baseline justify-between gap-3">
-              <h2>Add photos (optional)</h2>
-              <span className="text-sm text-[#7a828d]">
-                {photos.length}/{MAX_PHOTOS}
-              </span>
-            </div>
-            <p className="mt-1 text-sm">Add photos that show the object and the repair area.</p>
-
-            {photos.length < MAX_PHOTOS && (
-              <label className="btn-outline mt-3 mb-0 w-full">
-                + Add photos
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={(event) => {
-                    intake.addPhotos(Array.from(event.target.files ?? []));
-                    event.target.value = "";
-                  }}
-                />
+        <>
+          <Title>What needs repairing?</Title>
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+            <Card className="min-w-0 flex-1">
+              <label htmlFor="description" className="text-sm font-medium">
+                What broke, and what is missing?
               </label>
-            )}
+              <textarea
+                id="description"
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                placeholder="The cabinet handle broke off and the broken piece is missing."
+                rows={10}
+                className={textareaClass}
+              />
+            </Card>
 
-            {photos.length > 0 && (
-              <ul className="mt-4 grid list-none grid-cols-2 gap-3 p-0">
-                {photos.map((photo) => (
-                  <li key={photo.id} className="overflow-hidden rounded-xl border border-line-light bg-white">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={photo.previewUrl}
-                      alt={photo.file.name}
-                      className="block h-[150px] w-full bg-[#eceff2] object-cover"
-                    />
-                    <div className="p-2.5">
-                      <div className="text-sm break-all text-[#59616d]">{photo.file.name}</div>
+            <Card
+              className="w-full shrink-0 lg:w-[400px]"
+              title="Photos"
+              actions={
+                <span className="text-xs text-subtle">
+                  {photos.length}/{MAX_PHOTOS}
+                </span>
+              }
+            >
+              {photos.length < MAX_PHOTOS && (
+                <PhotoDrop
+                  onFiles={intake.addPhotos}
+                  compact={photos.length > 0}
+                  hint="Optional: the object and the broken area"
+                />
+              )}
+
+              {photos.length > 0 && (
+                <ul className="grid grid-cols-2 gap-3">
+                  {photos.map((photo) => (
+                    <li key={photo.id} className="group relative overflow-hidden rounded-xl bg-surface-2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={photo.previewUrl}
+                        alt={photo.file.name}
+                        title={photo.file.name}
+                        className="block h-[130px] w-full object-cover"
+                      />
                       <button
                         type="button"
-                        className="btn-link mt-2 w-full py-1.5 text-sm"
+                        title="Remove"
+                        aria-label={`Remove ${photo.file.name}`}
+                        className="absolute top-2 right-2 grid h-7 w-7 cursor-pointer place-items-center rounded-full bg-black/60 text-white transition-colors hover:bg-danger"
                         onClick={() => intake.removePhoto(photo.id)}
                       >
-                        Remove
+                        <CloseIcon size={14} />
                       </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            <button
-              type="button"
-              className="mt-6 w-full"
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          </div>
+          <div className="flex justify-end">
+            <Button
+              variant="primary"
+              size="lg"
               onClick={() => setStep(hasPhotos ? 2 : 3)}
               disabled={!description.trim()}
             >
-              Continue →
-            </button>
-          </aside>
-        </div>
+              Continue
+              <NextIcon size={16} />
+            </Button>
+          </div>
+        </>
       )}
 
       {step === 2 && (
         <>
-          <h1>Annotate your photos</h1>
-          <p className="intro">
-            Mark important parts of the photo and briefly describe what they show or why they
-            matter for the repair.
-          </p>
+          <Title subtitle="Drag a box over what matters, then name it.">Mark your photos</Title>
           <PhotoAnnotation intake={intake} sizeReference />
-          <div className="nav-row">
-            <button type="button" className="btn-secondary" onClick={() => setStep(1)}>
-              ← Back
-            </button>
-            <button type="button" onClick={() => setStep(3)}>
-              Review →
-            </button>
+          <div className="flex justify-between gap-3">
+            <Button onClick={() => setStep(1)}>
+              <BackIcon size={16} />
+              Back
+            </Button>
+            <Button variant="primary" onClick={() => setStep(3)}>
+              Review
+              <NextIcon size={16} />
+            </Button>
           </div>
         </>
       )}
 
       {step === 3 && (
         <>
-          <h1>Review your repair</h1>
-          <p className="intro">Check the information below before submitting.</p>
+          <Title>Review</Title>
 
-          <h2 className="mb-2.5 text-lg">Repair description</h2>
-          <p className="whitespace-pre-wrap">{description}</p>
+          <Card title="Description">
+            <p className="text-sm leading-relaxed whitespace-pre-wrap">{description}</p>
+          </Card>
 
-          <h2 className="mt-8 mb-2.5 text-lg">Photos</h2>
-          {!hasPhotos && <p className="text-sm text-faint">No photos added</p>}
-          {photos.map((photo) => {
-            const own = annotations.filter((a) => a.photoId === photo.id);
-            return (
-              <div
-                key={photo.id}
-                className="grid grid-cols-[240px_1fr] gap-4.5 border-b border-line-soft py-4.5 max-[640px]:grid-cols-1"
-              >
-                <AnnotationCanvas
-                  imageUrl={photo.previewUrl}
-                  alt={photo.file.name}
-                  annotations={own}
-                  className="max-h-[180px]"
-                />
-                <div>
-                  <strong>{photo.file.name}</strong>
-                  {own.length > 0 ? (
-                    <ul className="mt-2 pl-5">
-                      {own.map((a) => (
-                        <li key={a.id}>
-                          {a.label || "Unnamed"}
-                          {a.sizeReference &&
-                            ` (size reference: ${a.sizeReference.knownDimension} ${a.sizeReference.unit})`}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-sm text-faint">No annotations</p>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+          <Card title="Photos">
+            {!hasPhotos && <Muted>No photos</Muted>}
+            <div className="flex flex-col divide-y divide-border/70">
+              {photos.map((photo) => {
+                const own = annotations.filter((a) => a.photoId === photo.id);
+                return (
+                  <div
+                    key={photo.id}
+                    className="grid grid-cols-[240px_1fr] gap-4 py-4 first:pt-0 last:pb-0 max-[640px]:grid-cols-1"
+                  >
+                    <AnnotationCanvas
+                      imageUrl={photo.previewUrl}
+                      alt={photo.file.name}
+                      annotations={own}
+                      className="max-h-[180px]"
+                    />
+                    <div className="min-w-0 text-sm">
+                      <p className="truncate font-medium">{photo.file.name}</p>
+                      {own.length > 0 ? (
+                        <ul className="mt-2 flex flex-col gap-1 text-muted">
+                          {own.map((a) => (
+                            <li key={a.id} className="flex items-center gap-2">
+                              <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: a.color }} />
+                              {a.label || "Unnamed"}
+                              {a.sizeReference &&
+                                ` (size reference: ${a.sizeReference.knownDimension} ${a.sizeReference.unit})`}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-1 text-subtle">No marks</p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
 
-          {error && <p className="error-box">{error}</p>}
+          {error && <ErrorBox>{error}</ErrorBox>}
 
-          <div className="nav-row">
-            <button type="button" className="btn-secondary" onClick={() => setStep(hasPhotos ? 2 : 1)}>
-              {hasPhotos ? "← Back to annotations" : "← Back"}
-            </button>
-            <button type="button" onClick={submit} disabled={submitting}>
+          <div className="flex justify-between gap-3">
+            <Button onClick={() => setStep(hasPhotos ? 2 : 1)}>
+              <BackIcon size={16} />
+              Back
+            </Button>
+            <Button variant="primary" size="lg" onClick={submit} disabled={submitting}>
               {submitting ? "Submitting…" : "Submit"}
-            </button>
+            </Button>
           </div>
         </>
       )}

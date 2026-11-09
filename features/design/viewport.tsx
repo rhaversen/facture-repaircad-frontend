@@ -7,6 +7,7 @@ import { Timer } from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import * as THREE from "three";
 
+import { Button } from "@/components/ui";
 import type { Guide } from "@/lib/types";
 import { createGuidesOverlay, type GuidesOverlay } from "./guides";
 
@@ -156,15 +157,9 @@ class CanvasErrorBoundary extends React.Component<
   render() {
     if (this.state.failed) {
       return (
-        <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center text-ink-soft">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted">
           <p>Viewport could not start.</p>
-          <button
-            type="button"
-            className="btn-secondary mt-3"
-            onClick={() => this.setState({ failed: false })}
-          >
-            Retry
-          </button>
+          <Button onClick={() => this.setState({ failed: false })}>Retry</Button>
         </div>
       );
     }
@@ -492,7 +487,7 @@ export function CadCanvas({
         shadows={{ type: THREE.PCFShadowMap }}
         camera={{ position: [12, 9, 18], fov: 45, near: 0.01, far: 2000 }}
         dpr={[1, 1.5]}
-        style={{ width: "100%", height: "100%", background: "#ffffff" }}
+        style={{ width: "100%", height: "100%", background: "var(--viewport)" }}
         onCreated={(state) => state.set({ clock: createTimerClock() })}
       >
         <ForgeStudio model={model} />

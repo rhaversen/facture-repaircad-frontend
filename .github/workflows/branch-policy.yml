@@ -1,0 +1,10 @@
+name: Branch Policy
+
+on:
+    pull_request:
+        branches: ["development", "staging", "main"]
+        types: [opened, edited, reopened, synchronize]
+
+jobs:
+    branch-policy:
+        uses: rhaversen/.github/.github/workflows/branch-policy.yml@main
